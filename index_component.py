@@ -13,7 +13,7 @@ srcdir = "E:/SJTU/实习/国泰海通/barra因子/data_base/index"
 bardir = "E:/SJTU/实习/国泰海通/barra因子/data_base/barra_data/全A_M"
 retdir = "E:/SJTU/实习/国泰海通/barra因子/data_base/fac_ret/whole_mkt"
 desdir = "E:/SJTU/实习/国泰海通/barra因子/result/指数构成"
-target_index = ['000300.XSHG','000905.XSHG', '000852.XSHG','932000.INDX','000922.XSHG'] #
+target_index = ['000300.XSHG','000905.XSHG', '000852.XSHG','932000.INDX','000922.XSHG'] #['000922.XSHG']#
 ban_index = ["399006.XSHE","000680.XSHG"]
 style_factors = ['size', 'non_linear_size', 'momentum', 'liquidity',
        'book_to_price', 'leverage', 'growth', 'earnings_yield', 'beta',
@@ -53,9 +53,13 @@ for dt,s in a_dict.items():
         print(f"{dt}天的因子暴露数据缺失:",len(s)-len(df_exposure))
     daily_exp = df_exposure.iloc[:, 1:].mul(df_exposure['weight'], axis=0).sum()
     A_dict[dt] = daily_exp
+all_factors = exposure.columns
 
 # 读取因子收益率数据
 df_facret = pd.read_pickle(f"{retdir}/factor_returns_20_2603.pkl")
+
+# 存储所有指数的年度行业权重数据
+all_targets_year_end_data = {}
 
 # 处理所有目标指数
 for target in target_index:
@@ -136,12 +140,12 @@ for target in target_index:
             
             # 计算加权因子暴露
             if 'weight' in df_exposure.columns and len(df_exposure) > 0:
-                daily_exp = df_exposure[style_factors].mul(df_exposure['weight'], axis=0).sum()
+                daily_exp = df_exposure[all_factors].mul(df_exposure['weight'], axis=0).sum()
                 factor_exposure_dict[current_date] = daily_exp
                     
                 # 计算相对于全A的暴露
                 if current_date in A_dict:
-                    relative_exp = daily_exp - A_dict[current_date][style_factors]
+                    relative_exp = daily_exp - A_dict[current_date]
                     relative_factor_exposure_dict[current_date] = relative_exp
         
         # 计算因子暴露乘以因子收益率
@@ -219,7 +223,7 @@ for target in target_index:
             })
     
     # 保存处理后的数据（按日期保存）
-    pd.to_pickle(all_data_dict, f"{target_desdir}/{target}_ind_ban_20_26M.pkl")
+    #pd.to_pickle(all_data_dict, f"{target_desdir}/{target}_ind_ban_20_26M.pkl")
     print(f"\n字典数据已保存到: {target_desdir}/{target}_ind_ban_20_26M.pkl")
     
     # 保存分析结果
@@ -241,10 +245,10 @@ for target in target_index:
         
         # 保存到Excel文件
         exposure_file = f"{target_desdir}/{target}_factor_exposure.xlsx"
-        with pd.ExcelWriter(exposure_file) as writer:
-            absolute_exposure_df.to_excel(writer, sheet_name='绝对暴露')
-            relative_exposure_df.to_excel(writer, sheet_name='相对全A暴露')
-        print(f"\n因子暴露数据已保存到: {exposure_file}")
+        #with pd.ExcelWriter(exposure_file) as writer:
+            #absolute_exposure_df.to_excel(writer, sheet_name='绝对暴露')
+            #relative_exposure_df.to_excel(writer, sheet_name='相对全A暴露')
+        #print(f"\n因子暴露数据已保存到: {exposure_file}")
     
     # 保存因子收益率数据
     if factor_returns_dict:
@@ -252,9 +256,41 @@ for target in target_index:
         
         # 保存到Excel文件
         factor_file = f"{target_desdir}/{target}_factor_returns.xlsx"
-        with pd.ExcelWriter(factor_file) as writer:
-            factor_returns_df.to_excel(writer, sheet_name='因子贡献收益率')
-        print(f"\n因子收益率数据已保存到: {factor_file}")
+        #with pd.ExcelWriter(factor_file) as writer:
+            #factor_returns_df.to_excel(writer, sheet_name='因子贡献收益率')
+        #print(f"\n因子收益率数据已保存到: {factor_file}")
+    
+    # 收集年度行业权重数据
+    if industry_weights_dict:
+        industry_weights_over_time = pd.DataFrame(industry_weights_dict).T.fillna(0)
+        # 选择权重较大的前10个行业（所有时间内权重总和最大的十个行业）
+        top_industries = industry_weights_over_time.sum().nlargest(10).index
+        # 提取每年6月和12月的最后一个交易日
+        year_end_data = []
+        for year in range(industry_weights_over_time.index.min().year, industry_weights_over_time.index.max().year + 1):
+            # 6月底
+            june_dates = industry_weights_over_time.index[(industry_weights_over_time.index.year == year) & (industry_weights_over_time.index.month == 6)]
+            if not june_dates.empty:
+                june_last = june_dates.max()
+                # 只取前10个行业的权重
+                june_weights = industry_weights_over_time.loc[june_last, top_industries]
+                row = {'日期': june_last}
+                for industry in top_industries:
+                    row[industry] = june_weights.get(industry, 0)
+                year_end_data.append(row)
+            # 12月底
+            dec_dates = industry_weights_over_time.index[(industry_weights_over_time.index.year == year) & (industry_weights_over_time.index.month == 12)]
+            if not dec_dates.empty:
+                dec_last = dec_dates.max()
+                # 只取前10个行业的权重
+                dec_weights = industry_weights_over_time.loc[dec_last, top_industries]
+                row = {'日期': dec_last}
+                for industry in top_industries:
+                    row[industry] = dec_weights.get(industry, 0)
+                year_end_data.append(row)
+        
+        if year_end_data:
+            all_targets_year_end_data[target] = year_end_data
     
     print(f"\n分析结果已保存到对应文件")
     
@@ -315,8 +351,10 @@ for target in target_index:
         
         # 为每个行业分配颜色
         unique_industries = top_changes_df['industry'].unique()
-        color_map = plt.cm.get_cmap('tab20', len(unique_industries))
-        industry_colors = {industry: color_map(i) for i, industry in enumerate(unique_industries)}
+        # 使用更大的颜色映射，支持更多行业
+        color_map = plt.cm.get_cmap('tab20c', min(40, len(unique_industries)))
+        # 如果行业数量超过颜色数量，使用循环分配
+        industry_colors = {industry: color_map(i % color_map.N) for i, industry in enumerate(unique_industries)}
         
         # 创建图表，调整大小以适应更多数据
         plt.figure(figsize=(20, 10))
@@ -432,4 +470,15 @@ for target in target_index:
     
     print(f"\n数据可视化已保存到对应文件")
 
+# 保存所有指数的年度行业权重到同一个Excel文件
+print("\n保存年度行业权重到汇总Excel文件...")
+industry_summary_file = f"{desdir}/年度行业权重汇总.xlsx"
+with pd.ExcelWriter(industry_summary_file) as writer:
+    for target, year_end_data in all_targets_year_end_data.items():
+        if year_end_data:
+            df_year_end = pd.DataFrame(year_end_data)
+            df_year_end.to_excel(writer, sheet_name=target, index=False)
+            print(f"已保存 {target} 的年度行业权重数据")
+
+print(f"年度行业权重汇总已保存到: {industry_summary_file}")
 print("\n所有指数处理完成！")
