@@ -78,7 +78,7 @@ for target in target_lst:
         
         with open(exp_file, 'rb') as f:
             exposure = pickle.load(f)
-        
+        all_factors = exposure.columns.tolist()
         # 计算目标指数的因子暴露
         if not target_weights.empty:
             df_target = target_weights.to_frame('weight')
@@ -88,7 +88,7 @@ for target in target_lst:
                 
             
             if 'weight' in df_target_exp.columns and len(df_target_exp) > 0:
-                daily_exp = df_target_exp[style_factors].mul(df_target_exp['weight'], axis=0).sum()
+                daily_exp = df_target_exp[all_factors].mul(df_target_exp['weight'], axis=0).sum()
                 factor_exposure_dict[current_date] = daily_exp
         
         # 计算全A的因子暴露
@@ -99,7 +99,7 @@ for target in target_lst:
             
             if 'weight' in df_a_exp.columns and len(df_a_exp) > 0:
                 df_a_exp["weight"] = df_a_exp["weight"] / df_a_exp["weight"].sum() #全A中的北交所股票暂时没有因子暴露
-                daily_a_exp = df_a_exp[style_factors].mul(df_a_exp['weight'], axis=0).sum()
+                daily_a_exp = df_a_exp[all_factors].mul(df_a_exp['weight'], axis=0).sum()
         
         # 计算相对于全A的暴露
         if daily_exp is not None and daily_a_exp is not None:
@@ -113,7 +113,7 @@ for target in target_lst:
             daily_facret = df_facret.loc[next_date_str]
             
             # 确保因子顺序对齐
-            common_factors = [f for f in style_factors if f in daily_facret.index]
+            common_factors = [f for f in all_factors if f in daily_facret.index]
             if common_factors:
                 factor_contribution = relative_exp[common_factors] * daily_facret[common_factors]
                 factor_contribution_dict[current_date] = factor_contribution
@@ -162,7 +162,7 @@ for target in target_lst:
             factor_equity_df = factor_equity_df / factor_equity_df.iloc[0]
         
         # 为每个因子创建图表
-        common_factors = [f for f in style_factors if f in relative_exposure_df.columns and f in factor_equity_df.columns]
+        common_factors = [f for f in all_factors if f in relative_exposure_df.columns and f in factor_equity_df.columns]
         for factor in common_factors:
             plt.figure(figsize=(15, 8))
             ax1 = plt.gca()
