@@ -61,6 +61,9 @@ df_facret = pd.read_pickle(f"{retdir}/factor_returns_20_2603.pkl")
 # 存储所有指数的年度行业权重数据
 all_targets_year_end_data = {}
 
+# 存储所有指数的size因子分位数数据
+all_targets_size_quantiles = {}
+
 # 处理所有目标指数
 for target in target_index:
     print(f"\n=== 处理指数: {target} ===")
@@ -147,6 +150,20 @@ for target in target_index:
                 if current_date in A_dict:
                     relative_exp = daily_exp - A_dict[current_date]
                     relative_factor_exposure_dict[current_date] = relative_exp
+                
+                # 计算size因子的分位数
+                if 'size' in df_exposure.columns:
+                    size_values = df_exposure['size'].dropna()
+                    if len(size_values) > 0:
+                        size_quantiles = {
+                            'date': current_date,
+                            '75%': size_values.quantile(0.75),
+                            '50%': size_values.quantile(0.5),
+                            '25%': size_values.quantile(0.25)
+                        }
+                        if target not in all_targets_size_quantiles:
+                            all_targets_size_quantiles[target] = []
+                        all_targets_size_quantiles[target].append(size_quantiles)
         
         # 计算因子暴露乘以因子收益率
         next_date = tds[tds > current_date.strftime('%Y-%m-%d')].iloc[0]
@@ -470,15 +487,71 @@ for target in target_index:
     
     print(f"\n数据可视化已保存到对应文件")
 
+# 处理866011.RI的size因子分位数数据
+print("\n处理866011.RI的size因子分位数数据...")
+all_targets_size_quantiles['866011.RI'] = []
+
+for dt, s in a_dict.items():
+    if dt in ex_dict:
+        exposure = ex_dict[dt]
+        df_exposure = s.to_frame().merge(exposure, left_index=True, right_index=True)
+        if 'size' in df_exposure.columns:
+            size_values = df_exposure['size'].dropna()
+            if len(size_values) > 0:
+                size_quantiles = {
+                    'date': dt,
+                    '75%': size_values.quantile(0.75),
+                    '50%': size_values.quantile(0.5),
+                    '25%': size_values.quantile(0.25)
+                }
+                all_targets_size_quantiles['866011.RI'].append(size_quantiles)
+
+# 绘制size因子分位数箱线图
+print("\n绘制size因子分位数箱线图...")
+
+# 准备数据
+quantile_data = {}
+for target, quantiles_list in all_targets_size_quantiles.items():
+    if quantiles_list:
+        df = pd.DataFrame(quantiles_list)
+        for q in ['75%', '50%', '25%']:
+            if q not in quantile_data:
+                quantile_data[q] = {}
+            quantile_data[q][target] = df[q].values
+
+# 创建子图
+fig, axes = plt.subplots(3, 1, figsize=(15, 12))
+quantile_labels = ['75%分位数', '50%分位数', '25%分位数']
+
+for i, (q, data) in enumerate(quantile_data.items()):
+    ax = axes[i]
+    
+    # 准备箱线图数据
+    box_data = [data[target] for target in data.keys()]
+    labels = list(data.keys())
+    
+    # 绘制箱线图
+    ax.boxplot(box_data, labels=labels)
+    ax.set_title(f'Size因子{quantile_labels[i]}箱线图')
+    ax.set_ylabel('Size因子值')
+    ax.grid(True, alpha=0.3)
+
+plt.tight_layout()
+size_quantile_file = f"{desdir}/size因子分位数箱线图.png"
+plt.savefig(size_quantile_file)
+plt.close()
+
+print(f"Size因子分位数箱线图已保存到: {size_quantile_file}")
+
 # 保存所有指数的年度行业权重到同一个Excel文件
 print("\n保存年度行业权重到汇总Excel文件...")
 industry_summary_file = f"{desdir}/年度行业权重汇总.xlsx"
-with pd.ExcelWriter(industry_summary_file) as writer:
-    for target, year_end_data in all_targets_year_end_data.items():
-        if year_end_data:
-            df_year_end = pd.DataFrame(year_end_data)
-            df_year_end.to_excel(writer, sheet_name=target, index=False)
-            print(f"已保存 {target} 的年度行业权重数据")
+# with pd.ExcelWriter(industry_summary_file) as writer:
+#     for target, year_end_data in all_targets_year_end_data.items():
+#         if year_end_data:
+#             df_year_end = pd.DataFrame(year_end_data)
+#             df_year_end.to_excel(writer, sheet_name=target, index=False)
+#             print(f"已保存 {target} 的年度行业权重数据")
 
 print(f"年度行业权重汇总已保存到: {industry_summary_file}")
 print("\n所有指数处理完成！")
