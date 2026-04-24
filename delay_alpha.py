@@ -11,12 +11,14 @@ from logging_utils import setup_logger
 logger = setup_logger('delay_alpha')
 
 # 提前计算市场收益率的滞后项
-def precompute_market_lags(market_returns, max_lag=10):
-    """提前计算市场收益率的滞后项"""
-    market_data = pd.DataFrame({'market': market_returns})
-    for n in range(1, max_lag + 1):
-        market_data[f'market_lag{n}'] = market_returns.shift(n)
-    return market_data
+def create_lag_matrix(data, max_lag):
+        """创建滞后矩阵"""
+        n = len(data)
+        lag_matrix = np.zeros((n, max_lag + 1))
+        lag_matrix[:, 0] = data.values
+        for i in range(1, max_lag + 1):
+            lag_matrix[i:, i] = data.values[:-i]
+        return lag_matrix
 
 # 2. 计算EWMA权重
 def calculate_ewma_weights(window, half_life=63):
@@ -28,7 +30,7 @@ def calculate_ewma_weights(window, half_life=63):
 
 
 # 单只股票的延迟计算
-def calculate_stock_delay(stock, stock_returns, market_returns, window=126, lag=10):
+def calculate_stock_delay(stock, stock_returns, market_lags, window=126, lag=10):
     """计算单只股票的延迟指标"""
     # 注意：这里不要使用logger，因为在子进程中使用会导致重复日志
     d1 = pd.Series(index=stock_returns.index, name=stock)
@@ -48,18 +50,9 @@ def calculate_stock_delay(stock, stock_returns, market_returns, window=126, lag=
         return d1, d2, d3
     
     # 构建滞后矩阵
-    def create_lag_matrix(data, max_lag):
-        """创建滞后矩阵"""
-        n = len(data)
-        lag_matrix = np.zeros((n, max_lag + 1))
-        lag_matrix[:, 0] = data.values
-        for i in range(1, max_lag + 1):
-            lag_matrix[i:, i] = data.values[:-i]
-        return lag_matrix
     
     # 创建股票收益和市场收益的滞后矩阵
     stock_lags = create_lag_matrix(stock_series, lag)
-    market_lags = create_lag_matrix(market_series, lag)
     
     # 滚动窗口计算
     for i in range(window, len(stock_series)):
@@ -191,7 +184,7 @@ def worker(stock, window, lag):
 GLOBAL_STOCK_RETURNS = None
 GLOBAL_MARKET_RETURNS = None
 
-def calculate_delay(stock_returns, market_returns, window=126, lag=10, half_life=63):
+def calculate_delay(stock_returns, market_lags, window=126, lag=10, half_life=63):
     """计算日频延迟指标 - 修复Windows多进程版本"""
     
     # 初始化结果字典
@@ -209,7 +202,7 @@ def calculate_delay(stock_returns, market_returns, window=126, lag=10, half_life
     with ProcessPoolExecutor(
         max_workers=num_cores,
         initializer=init_worker,
-        initargs=(stock_returns, market_returns)
+        initargs=(stock_returns, market_lags)
     ) as executor:
         
         futures = [
@@ -311,7 +304,8 @@ if __name__ == "__main__":
 
     # 5. 主计算
     logger.info("开始计算延迟指标...")
-    delay_dict, errors = calculate_delay(stock_returns_df, market_returns, half_life=63)
+    market_lags = create_lag_matrix(market_returns, lag=10)
+    delay_dict, errors = calculate_delay(stock_returns_df, market_lags, half_life=63)
 
     # 6. 保存结果
     logger.info("保存结果...")
