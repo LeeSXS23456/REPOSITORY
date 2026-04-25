@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import statsmodels.api as sm
+import pickle
 import os
 from datetime import datetime, timedelta
 from concurrent.futures import ProcessPoolExecutor
@@ -43,7 +44,7 @@ def calculate_stock_delay(stock, stock_returns, market_lags, window=126, lag=10)
     # 向量化计算：创建滚动窗口矩阵
     # 提取股票收益和市场数据
     stock_series = r.dropna()
-    market_series = market_returns.loc[stock_series.index]
+
     
     # 确保数据长度足够
     if len(stock_series) < window:
@@ -163,10 +164,10 @@ def calculate_stock_delay(stock, stock_returns, market_lags, window=126, lag=10)
 #     logger.info(f"批量计算完成 | {datetime.now()}")
 #     return d1, d2, d3, {}
 
-def init_worker(stock_returns, market_returns):
-    global GLOBAL_STOCK_RETURNS, GLOBAL_MARKET_RETURNS
+def init_worker(stock_returns, market_lags):
+    global GLOBAL_STOCK_RETURNS, GLOBAL_MARKET_LAGS
     GLOBAL_STOCK_RETURNS = stock_returns
-    GLOBAL_MARKET_RETURNS = market_returns
+    GLOBAL_MARKET_LAGS = market_lags
 
 
 def worker(stock, window, lag):
@@ -174,7 +175,7 @@ def worker(stock, window, lag):
         return stock, calculate_stock_delay(
             stock,
             GLOBAL_STOCK_RETURNS,
-            GLOBAL_MARKET_RETURNS,
+            GLOBAL_MARKET_LAGS,
             window,
             lag
         )
@@ -182,7 +183,7 @@ def worker(stock, window, lag):
         return stock, e
 
 GLOBAL_STOCK_RETURNS = None
-GLOBAL_MARKET_RETURNS = None
+GLOBAL_MARKET_LAGS = None
 
 def calculate_delay(stock_returns, market_lags, window=126, lag=10, half_life=63):
     """计算日频延迟指标 - 修复Windows多进程版本"""
@@ -255,34 +256,91 @@ def calculate_delay(stock_returns, market_lags, window=126, lag=10, half_life=63
 
 
 
-def orthoganalize_delay_with_size(delay_dict, mcp_dict):
+def load_beta_residual_vol(bardir, dates):
     """
-    正交化延迟指标与市值的关系
+    从文件中加载beta和残差波动率数据
+    
+    参数:
+    bardir: 存储beta和残差波动率数据的目录
+    dates: 需要加载的日期列表
+    
+    返回:
+    beta_dict: 字典，键为日期，值为包含beta的DataFrame
+    residual_vol_dict: 字典，键为日期，值为包含残差波动率的DataFrame
+    """
+    beta_dict = {}
+    residual_vol_dict = {}
+    
+    logger.info("开始加载beta和残差波动率数据...")
+    
+    # 遍历每个日期
+    for date in dates:
+        # 构建文件名
+        date_str = date.strftime('%Y-%m-%d')
+        file_path = f"{bardir}/{date_str}.pkl"
+        
+        # 检查文件是否存在
+        if not os.path.exists(file_path):
+            logger.warning(f"文件 {file_path} 不存在，跳过")
+            continue
+        
+        try:
+            # 读取文件
+            df = pd.read_pickle(file_path).set_index("order_book_id")
+            
+            # 提取beta和residual_volatility列
+            if 'beta' in df.columns and 'residual_volatility' in df.columns:
+                # 创建beta DataFrame
+                beta_df = df[['beta']].copy()
+                
+                
+                # 创建residual_volatility DataFrame
+                residual_vol_df = df[['residual_volatility']].copy()
+                residual_vol_df.columns = ['residual_vol']  # 统一列名
+                
+                
+                beta_dict[date] = beta_df
+                residual_vol_dict[date] = residual_vol_df
+            else:
+                logger.warning(f"文件 {file_path} 中缺少beta或residual_volatility列")
+        except Exception as e:
+            logger.error(f"读取文件 {file_path} 时出错: {e}")
+            continue
+    
+    logger.info("beta和残差波动率数据加载完成")
+    return beta_dict, residual_vol_dict
+
+
+def orthoganalize_delay_with_beta_residual(delay_dict, beta_dict, residual_vol_dict):
+    """
+    正交化延迟指标与beta和残差波动率的关系（使用rank回归）
     
     参数:
     delay_dict: 字典，键为日期，值为包含D1、D2、D3延迟指标的DataFrame
-    mcp_dict: 字典，键为日期，值为包含free_mkp的DataFrame
+    beta_dict: 字典，键为日期，值为包含beta的DataFrame
+    residual_vol_dict: 字典，键为日期，值为包含残差波动率的DataFrame
     
     返回:
     ortho_delay_dict: 正交化后的延迟指标字典
     """
     ortho_delay_dict = {}
     
-    logger.info("开始正交化延迟指标与市值的关系...")
+    logger.info("开始正交化延迟指标与beta和残差波动率的关系...")
     
     # 遍历每个日期
     for date in delay_dict.keys():
-        if date not in mcp_dict:
-            logger.warning(f"日期 {date} 在mcp_dict中不存在，跳过正交化")
+        if date not in beta_dict or date not in residual_vol_dict:
+            logger.warning(f"日期 {date} 在beta_dict或residual_vol_dict中不存在，跳过正交化")
             ortho_delay_dict[date] = delay_dict[date]
             continue
         
-        # 获取当天的延迟指标和市值数据
+        # 获取当天的延迟指标、beta和残差波动率数据
         delay_df = delay_dict[date].copy()
-        mcp_df = mcp_dict[date].copy()
+        beta_df = beta_dict[date].copy()
+        residual_vol_df = residual_vol_dict[date].copy()
         
-        # 确保两个DataFrame的索引一致
-        common_stocks = delay_df.index.intersection(mcp_df.index)
+        # 确保三个DataFrame的索引一致
+        common_stocks = delay_df.index.intersection(beta_df.index).intersection(residual_vol_df.index)
         if len(common_stocks) == 0:
             logger.warning(f"日期 {date} 没有共同的股票，跳过正交化")
             ortho_delay_dict[date] = delay_df
@@ -290,26 +348,37 @@ def orthoganalize_delay_with_size(delay_dict, mcp_dict):
         
         # 提取共同股票的数据
         delay_subset = delay_df.loc[common_stocks]
-        mcp_subset = mcp_df.loc[common_stocks]
-        
-        # 计算市值的对数值
-        size = np.log(mcp_subset['free_mkp'])
+        beta_subset = beta_df.loc[common_stocks]
+        residual_vol_subset = residual_vol_df.loc[common_stocks]
         
         # 对每个延迟指标进行正交化
         for col in ['D1', 'D2', 'D3']:
             if col in delay_subset.columns:
                 # 获取非空数据
-                valid_mask = delay_subset[col].notna() & size.notna()
-                if valid_mask.sum() > 1:
+                valid_mask = delay_subset[col].notna() & beta_subset['beta'].notna() & residual_vol_subset['residual_vol'].notna()
+                if valid_mask.sum() > 2:  # 需要至少3个数据点来拟合包含两个解释变量的模型
+                    # 提取有效数据
+                    delay_valid = delay_subset.loc[valid_mask, col]
+                    beta_valid = beta_subset.loc[valid_mask, 'beta']
+                    residual_vol_valid = residual_vol_subset.loc[valid_mask, 'residual_vol']
+                    
+                    # 计算rank
+                    delay_rank = delay_valid.rank()
+                    beta_rank = beta_valid.rank()
+                    residual_vol_rank = residual_vol_valid.rank()
+                    
                     # 构建回归模型
-                    X = sm.add_constant(size[valid_mask])
-                    y = delay_subset.loc[valid_mask, col]
+                    X = sm.add_constant(np.column_stack([beta_rank, residual_vol_rank]))
+                    y = delay_rank
                     
                     # 拟合回归
                     model = sm.OLS(y, X).fit()
                     
                     # 计算残差作为正交化后的延迟指标
-                    delay_subset.loc[valid_mask, f'{col}_orth'] = model.resid
+                    residuals = model.resid
+                    
+                    # 将残差赋值回原始DataFrame
+                    delay_subset.loc[valid_mask, f'{col}_orth'] = residuals
                 else:
                     delay_subset[f'{col}_orth'] = np.nan
         
@@ -322,7 +391,7 @@ def orthoganalize_delay_with_size(delay_dict, mcp_dict):
 if __name__ == "__main__":
     # 主程序入口，只有主进程会执行这里的代码
     srcdir = "E:/SJTU/实习/国泰海通/barra因子/data_base/stk_ret"
-    mcpdir = "E:/SJTU/实习/国泰海通/barra因子/data_base/stk_mcp"
+    bardir = "E:/SJTU/实习/国泰海通/barra因子/data_base/barra_data/whole_mkt"
     desdir = "E:/SJTU/实习/国泰海通/barra因子/result/延迟alpha"
     os.makedirs(desdir, exist_ok=True)
 
@@ -330,9 +399,6 @@ if __name__ == "__main__":
     logger.info("开始读取数据...")
     ret_dict = pd.read_pickle(f"{srcdir}/全A_ret_24_2603D_dict.pkl")
     idx_df = pd.read_excel(f"{srcdir}/866011.RI_ret_24_2603D.xlsx",index_col=0)
-    
-    # 读取mcp_dict数据
-    mcp_dict = pd.read_pickle(f"{mcpdir}/全A_freemcp_25_26D_dict.pkl")
     
     market_returns = idx_df['866011.RI']
     # 确保市场收益率数据的索引是日期类型
@@ -370,36 +436,39 @@ if __name__ == "__main__":
     stock_returns_df = temp_df.pivot(index='date', columns='stock', values='ret')
     logger.info(f"股票收益率DataFrame构建完毕 | {datetime.now()}")
 
+    # 加载beta和残差波动率数据
+    beta_dict, residual_vol_dict = load_beta_residual_vol(bardir, relevant_dates)
+
     # 5. 主计算
     logger.info("开始计算延迟指标...")
-    market_lags = create_lag_matrix(market_returns, lag=10)
+    market_lags = create_lag_matrix(market_returns, 10)
     delay_dict, errors = calculate_delay(stock_returns_df, market_lags, half_life=63)
 
-    # 6. 正交化延迟指标与市值的关系
-    ortho_delay_dict = orthoganalize_delay_with_size(delay_dict, mcp_dict)
+    # 6. 正交化延迟指标与beta和残差波动率的关系
+    ortho_delay_dict = orthoganalize_delay_with_beta_residual(delay_dict, beta_dict, residual_vol_dict)
 
     # 7. 保存结果
     logger.info("保存结果...")
-    # 保存为pickle文件
-    import pickle
-    with open(f"{desdir}/delay_measures_2024_2026.pkl", 'wb') as f:
-        pickle.dump(delay_dict, f)
-    logger.info(f"保存字典格式结果到 {desdir}/delay_measures_2024_2026.pkl")
+    # # 保存为pickle文件
+    # import pickle
+    # with open(f"{desdir}/delay_measures_2024_2026.pkl", 'wb') as f:
+    #     pickle.dump(delay_dict, f)
+    # logger.info(f"保存字典格式结果到 {desdir}/delay_measures_2024_2026.pkl")
     
     # 保存正交化后的结果
-    with open(f"{desdir}/ortho_delay_measures_2024_2026.pkl", 'wb') as f:
+    with open(f"{desdir}/ortho_delay_measures_2024_2026_dict.pkl", 'wb') as f:
         pickle.dump(ortho_delay_dict, f)
-    logger.info(f"保存正交化后的结果到 {desdir}/ortho_delay_measures_2024_2026.pkl")
+    logger.info(f"保存正交化后的结果到 {desdir}/ortho_delay_measures_2024_2026_dict.pkl")
 
     # 可选：保存为Excel文件（如果需要）
     # 由于数据量可能很大，这里只保存前100天的数据作为示例
     sample_dates = list(delay_dict.keys())[:22]
     if sample_dates:
-        with pd.ExcelWriter(f"{desdir}/延迟指标_2024_2026_sample.xlsx") as writer:
-            for date in sample_dates:
-                sheet_name = date.strftime('%Y-%m-%d')
-                delay_dict[date].to_excel(writer, sheet_name=sheet_name)
-        logger.info(f"保存示例数据到 {desdir}/延迟指标_2024_2026_sample.xlsx")
+    #     with pd.ExcelWriter(f"{desdir}/延迟指标_2024_2026_sample.xlsx") as writer:
+    #         for date in sample_dates:
+    #             sheet_name = date.strftime('%Y-%m-%d')
+    #             delay_dict[date].to_excel(writer, sheet_name=sheet_name)
+    #     logger.info(f"保存示例数据到 {desdir}/延迟指标_2024_2026_sample.xlsx")
         
         # 保存正交化后的示例数据
         with pd.ExcelWriter(f"{desdir}/正交化延迟指标_2024_2026_sample.xlsx") as writer:
