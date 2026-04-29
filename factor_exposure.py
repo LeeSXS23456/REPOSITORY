@@ -105,7 +105,7 @@ def calculate_factor_exposure(fund_returns, factor_returns, window=12, half_life
     for fund in fund_returns.columns:
         fund_data = fund_returns[fund].dropna()
         exposures = []
-        r_squared_list = []
+        r_squared_pca_list = []
         industry_sum_list = []
         num_negative_list = []
         
@@ -147,15 +147,17 @@ def calculate_factor_exposure(fund_returns, factor_returns, window=12, half_life
                     beta = beta_pca @ pca.components_
                     
                     # 计算PCA回归的R方
-                    # 计算预测值
-                    y_pred = weighted_X @ full_beta
-                    # 计算总平方和 (TSS)
+                    y_pred_pca = weighted_X @ full_beta
                     tss = np.sum((weighted_y - np.mean(weighted_y))**2)
-                    # 计算残差平方和 (RSS)
-                    rss = np.sum((weighted_y - y_pred)**2)
-                    # 计算R方
-                    r_squared = 1 - (rss / tss)
-                    print(f"PCA回归R方: {r_squared:.4f}, 截距项: {intercept:.4f}")
+                    rss_pca = np.sum((weighted_y - y_pred_pca)**2)
+                    r_squared_pca = 1 - (rss_pca / tss)
+                    
+                    # 计算原始因子回归的R方 (使用还原后的beta和原始因子) #待商榷！
+                    # weighted_X_raw = X * weights[:, np.newaxis]
+                    # y_pred_raw = weighted_X_raw @ beta
+                    # rss_raw = np.sum((weighted_y - y_pred_raw)**2)
+                    # r_squared_raw = 1 - (rss_raw / tss)
+                    print(f"PCA回归R方: {r_squared_pca:.4f}")
                     
                     # # 为前5个基金的第一个窗口绘制拟合图
                     # if fund in fund_returns.columns[:5] and i == window:
@@ -207,13 +209,13 @@ def calculate_factor_exposure(fund_returns, factor_returns, window=12, half_life
                     print(f"错误: {e}")
                 
                 exposures.append(beta)
-                r_squared_list.append(r_squared)
+                r_squared_pca_list.append(r_squared_pca)
                 industry_sum_list.append(industry_sum)
                 num_negative_list.append(num_negative)
             else:
                 # 数据不足时填充0
                 exposures.append(np.zeros(factor_matrix.shape[1]))
-                r_squared_list.append(None)
+                r_squared_pca_list.append(None)
                 industry_sum_list.append(None)
                 num_negative_list.append(None)
         
@@ -228,7 +230,7 @@ def calculate_factor_exposure(fund_returns, factor_returns, window=12, half_life
         
         # 构建统计信息DataFrame
         stats_df = pd.DataFrame({
-            'r_squared': r_squared_list,
+            'r_squared_pca': r_squared_pca_list,
             'industry_sum': industry_sum_list,
             'num_negative': num_negative_list
         }, index=fund_data.index[window:])
@@ -545,14 +547,14 @@ def plot_style_alpha_contribution(rank_df, style_cols, fund):
     plt.grid(True)
     
     # 保存图表
-    plot_dir = f"{desdir}/decompose_nav_plots"
-    if not os.path.exists(plot_dir):
-        os.makedirs(plot_dir)
-    plot_path = f"{plot_dir}/{fund}_style_alpha.png"
-    plt.savefig(plot_path)
+    # plot_dir = f"{desdir}/decompose_nav_plots"
+    # if not os.path.exists(plot_dir):
+    #     os.makedirs(plot_dir)
+    # plot_path = f"{plot_dir}/{fund}_style_alpha.png"
+    # plt.savefig(plot_path)
     plt.close()
-    print(f"风格因子收益和pure alpha图已保存到: {plot_path}")
-
+    #print(f"风格因子收益和pure alpha图已保存到: {plot_path}")
+    
 # 计算pure alpha并分析排位
 def calculate_pure_alpha(fund_returns, exposure_dict, factor_returns):
     print("计算pure alpha并分析排位...")
@@ -722,13 +724,13 @@ def main():
         if all_stats:
             combined_stats = pd.concat(all_stats)
             # 重新排列列顺序
-            combined_stats = combined_stats[['fund', 'r_squared', 'industry_sum', 'num_negative']]
+            combined_stats = combined_stats[['fund', 'r_squared_pca', 'r_squared_raw', 'industry_sum', 'num_negative']]
             # 输出到Excel
             stats_file = f"{stats_dir}/all_fund_stats.xlsx"
             combined_stats.to_excel(stats_file, index=True)
             print(f"统计信息已输出到: {stats_file}")
         
-        # 7. 计算pure alpha并分析排位
+        #7. 计算pure alpha并分析排位
         alpha_dict, rank_dict = calculate_pure_alpha(fund_returns, exposure_dict, factor_returns)
         
         # 8. 为所有基金绘制风格因子收益和pure alpha图
