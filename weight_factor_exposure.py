@@ -9,6 +9,7 @@ plt.rcParams['axes.unicode_minus'] = False
 
 srcdir = "E:/SJTU/实习/国泰海通/barra因子/result/管理人暴露/weight_exposure"
 desdir = "E:/SJTU/实习/国泰海通/barra因子/result/管理人暴露/weight_result"
+FUND_NAV_PATH = 'E:/SJTU/实习/国泰海通/业绩回测/nav/纯中证500净值数据.xlsx'
 FAC_RET_PATH = 'E:/SJTU/实习/国泰海通/barra因子/data_base/fac_ret/中证500/factor_returns_07_2604.pkl'
 
 if not os.path.exists(desdir):
@@ -73,10 +74,35 @@ def main():
     all_factor_contributions = {}
     all_exposures = {}
     
+    year_end_dates = pd.to_datetime([
+        '2025-12-31', '2024-12-31', '2023-12-31', 
+        '2022-12-31', '2021-12-31', '2020-12-31'
+    ])
+    
     for code, group in grouped:
         print(f"   处理编码: {code}")
         
-        exposure_df = group[style_factors].copy().dropna()
+        exposure_df = group[style_factors].copy()
+        
+        na_mask = exposure_df.isna().all(axis=1)
+        na_dates = exposure_df[na_mask].index
+        valid_year_end_dates = na_dates.intersection(year_end_dates)
+        
+        if not valid_year_end_dates.empty:
+            latest_na_date = valid_year_end_dates.max()
+            exposure_df = exposure_df[exposure_df.index > latest_na_date]
+            print(f"   - 发现年底全为NaN，从 {latest_na_date.strftime('%Y-%m-%d')} 之后开始")
+        
+        zero_mask = (exposure_df == 0).all(axis=1)
+        zero_dates = exposure_df[zero_mask].index
+        
+        if not zero_dates.empty:
+            latest_zero_date = zero_dates.max()
+            exposure_df = exposure_df[exposure_df.index > latest_zero_date]
+            print(f"   - 发现全部为0的行，从 {latest_zero_date.strftime('%Y-%m-%d')} 之后开始")
+        
+        exposure_df = exposure_df.dropna()
+        
         mask = (exposure_df != 0).any(axis=1)
         exposure_df = exposure_df[mask]
         
@@ -106,86 +132,121 @@ def main():
     
     print(f"\n   处理完成的编码数量: {len(all_factor_contributions)}")
     
-    style_factor_dir = f"{desdir}/风格因子收益贡献净值"
-    if not os.path.exists(style_factor_dir):
-        os.makedirs(style_factor_dir)
+    # style_factor_dir = f"{desdir}/风格因子收益贡献净值"
+    # if not os.path.exists(style_factor_dir):
+    #     os.makedirs(style_factor_dir)
     
-    for code, contributions in all_factor_contributions.items():
-        plt.figure(figsize=(15, 10))
-        for factor in style_factors:
-            if factor in contributions.columns:
-                cum_return = (1 + contributions[factor]).cumprod()
-                if not cum_return.empty:
-                    cum_return = cum_return / cum_return.iloc[0]
-                    plt.plot(cum_return.index, cum_return.values, label=factor_name_map[factor], alpha=0.7)
-        plt.title(f'Code {code} - Style Factor Net Value')
-        plt.xlabel('Date')
-        plt.ylabel('Net Value')
-        plt.legend()
-        plt.grid(True)
-        plt.xticks(rotation=45)
-        plt.tight_layout()
-        plt.savefig(f"{style_factor_dir}/{code}_因子净值曲线.png")
-        plt.close()
-        print(f"   - 编码 {code} 因子净值曲线已保存")
+    # for code, contributions in all_factor_contributions.items():
+    #     plt.figure(figsize=(15, 10))
+    #     for factor in style_factors:
+    #         if factor in contributions.columns:
+    #             cum_return = (1 + contributions[factor]).cumprod()
+    #             if not cum_return.empty:
+    #                 cum_return = cum_return / cum_return.iloc[0]
+    #                 plt.plot(cum_return.index, cum_return.values, label=factor_name_map[factor], alpha=0.7)
+    #     plt.title(f'Code {code} - Style Factor Net Value')
+    #     plt.xlabel('Date')
+    #     plt.ylabel('Net Value')
+    #     plt.legend()
+    #     plt.grid(True)
+    #     plt.xticks(rotation=45)
+    #     plt.tight_layout()
+    #     plt.savefig(f"{style_factor_dir}/{code}_因子净值曲线.png")
+    #     plt.close()
+    #     print(f"   - 编码 {code} 因子净值曲线已保存")
     
-    for code, contributions in all_factor_contributions.items():
-        code_dir = f"{desdir}/{code}"
-        if not os.path.exists(code_dir):
-            os.makedirs(code_dir)
+    # for code, contributions in all_factor_contributions.items():
+    #     code_dir = f"{desdir}/EXexposure_with_EXfactor_return/{code}"
+    #     if not os.path.exists(code_dir):
+    #         os.makedirs(code_dir)
         
-        exposure_df = all_exposures[code]
+    #     exposure_df = all_exposures[code]
         
-        for factor in style_factors:
-            if factor in contributions.columns and factor in exposure_df.columns:
-                fig, ax1 = plt.subplots(figsize=(15, 8))
+    #     for factor in style_factors:
+    #         if factor in contributions.columns and factor in exposure_df.columns:
+    #             fig, ax1 = plt.subplots(figsize=(15, 8))
                 
-                common_dates = contributions.index.intersection(exposure_df.index)
-                if len(common_dates) == 0:
-                    continue
+    #             common_dates = contributions.index.intersection(exposure_df.index)
+    #             if len(common_dates) == 0:
+    #                 continue
                 
-                exposure_data = exposure_df.loc[common_dates, factor]
-                contribution_data = contributions.loc[common_dates, factor]
+    #             exposure_data = exposure_df.loc[common_dates, factor]
+    #             contribution_data = contributions.loc[common_dates, factor]
                 
-                factor_name = factor_name_map[factor]
-                if factor_name in factor_returns.columns:
-                    factor_return_data = factor_returns.loc[common_dates, factor_name]
-                else:
-                    factor_return_data = pd.Series(index=common_dates)
+    #             factor_name = factor_name_map[factor]
+    #             if factor_name in factor_returns.columns:
+    #                 factor_return_data = factor_returns.loc[common_dates, factor_name]
+    #             else:
+    #                 factor_return_data = pd.Series(index=common_dates)
                 
-                ax1.bar(exposure_data.index, exposure_data.values, alpha=0.7, label=f'{factor_name} Exposure', color='blue')
-                ax1.set_xlabel('Date')
-                ax1.set_ylabel(f'{factor_name} Exposure', color='blue')
-                ax1.tick_params(axis='y', labelcolor='blue')
-                ax1.set_xticks(exposure_data.index[::max(1, len(exposure_data)//10)])
-                ax1.set_xticklabels(exposure_data.index[::max(1, len(exposure_data)//10)].strftime('%Y-%m-%d'), rotation=45)
+    #             ax1.bar(exposure_data.index, exposure_data.values, alpha=0.7, label=f'{factor_name} Exposure', color='blue')
+    #             ax1.set_xlabel('Date')
+    #             ax1.set_ylabel(f'{factor_name} Exposure', color='blue')
+    #             ax1.tick_params(axis='y', labelcolor='blue')
+    #             ax1.set_xticks(exposure_data.index[::max(1, len(exposure_data)//10)])
+    #             ax1.set_xticklabels(exposure_data.index[::max(1, len(exposure_data)//10)].strftime('%Y-%m-%d'), rotation=45)
                 
-                ax2 = ax1.twinx()
+    #             ax2 = ax1.twinx()
                 
-                cum_return_contribution = (1 + contribution_data).cumprod()
-                if not cum_return_contribution.empty:
-                    cum_return_contribution = cum_return_contribution / cum_return_contribution.iloc[0]
-                    ax2.plot(cum_return_contribution.index, cum_return_contribution.values, 'r-', linewidth=2, label=f'{factor_name} Contribution')
+    #             cum_return_contribution = (1 + contribution_data).cumprod()
+    #             if not cum_return_contribution.empty:
+    #                 cum_return_contribution = cum_return_contribution / cum_return_contribution.iloc[0]
+    #                 ax2.plot(cum_return_contribution.index, cum_return_contribution.values, 'r-', linewidth=2, label=f'{factor_name} Contribution')
                 
-                if not factor_return_data.empty:
-                    cum_return_factor = (1 + factor_return_data).cumprod()
-                    cum_return_factor = cum_return_factor / cum_return_factor.iloc[0]
-                    ax2.plot(cum_return_factor.index, cum_return_factor.values, 'g--', linewidth=2, label=f'{factor_name} Factor Return')
+    #             if not factor_return_data.empty:
+    #                 cum_return_factor = (1 + factor_return_data).cumprod()
+    #                 cum_return_factor = cum_return_factor / cum_return_factor.iloc[0]
+    #                 ax2.plot(cum_return_factor.index, cum_return_factor.values, 'g--', linewidth=2, label=f'{factor_name} Factor Return')
                 
-                ax2.set_ylabel('Net Value', color='red')
-                ax2.tick_params(axis='y', labelcolor='red')
+    #             ax2.set_ylabel('Net Value', color='red')
+    #             ax2.tick_params(axis='y', labelcolor='red')
                 
-                lines1, labels1 = ax1.get_legend_handles_labels()
-                lines2, labels2 = ax2.get_legend_handles_labels()
-                ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
+    #             lines1, labels1 = ax1.get_legend_handles_labels()
+    #             lines2, labels2 = ax2.get_legend_handles_labels()
+    #             ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
                 
-                plt.title(f'Code {code} - {factor_name} Exposure & Net Value')
-                plt.grid(True)
-                plt.tight_layout()
-                plt.savefig(f"{code_dir}/{factor_name}_exposure_net_value.png")
-                plt.close()
+    #             plt.title(f'Code {code} - {factor_name} Exposure & Net Value')
+    #             plt.grid(True)
+    #             plt.tight_layout()
+    #             plt.savefig(f"{code_dir}/{factor_name}_exposure_net_value.png")
+    #             plt.close()
 
-        print(f"   - 编码 {code} 暴露净值图片已保存")
+    #     print(f"   - 编码 {code} 暴露净值图片已保存")
+    
+    print("\n5. 计算超额收益率并保存...")
+    fund_nav = pd.read_excel(FUND_NAV_PATH, index_col=0)
+    fund_nav.index = pd.to_datetime(fund_nav.index)
+    fund_nav.columns = fund_nav.columns.astype(str)
+    
+    index_returns = fund_nav.iloc[:, 0].pct_change().dropna()
+    
+    exreturns_dir = f"{desdir}/EXreturns"
+    if not os.path.exists(exreturns_dir):
+        os.makedirs(exreturns_dir)
+    
+    for code in all_factor_contributions.keys():
+        if str(code) in fund_nav.columns:
+            fund_returns = fund_nav[str(code)].pct_change().dropna()
+            
+            excess_returns = fund_returns - index_returns.reindex(fund_returns.index)
+            
+            contributions = all_factor_contributions[code]
+            
+            common_dates = excess_returns.index.intersection(contributions.index)
+            
+            result_df = pd.DataFrame({
+                'excess_return': excess_returns.loc[common_dates]
+            })
+            
+            for factor in style_factors:
+                if factor in contributions.columns:
+                    english_factor_name = factor_name_map[factor]
+                    result_df[english_factor_name] = contributions.loc[common_dates, factor]
+            
+            result_df.to_excel(f"{exreturns_dir}/{code}_超额收益与因子贡献.xlsx")
+            print(f"   - 编码 {code} 超额收益与因子贡献已保存")
+        else:
+            print(f"   - 编码 {code} 在净值数据中不存在，跳过")
 
 if __name__ == "__main__":
     main()
