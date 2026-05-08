@@ -5,43 +5,60 @@ import pickle
 import matplotlib.pyplot as plt
 from datetime import datetime
 from sklearn.decomposition import PCA
+import logging
 
 # 设置 Matplotlib 支持中文
 plt.rcParams['font.sans-serif'] = ['SimHei']  # 使用黑体字体
 plt.rcParams['axes.unicode_minus'] = False  # 解决负号显示问题
 
 # 数据路径
-FUND_NAV_PATH = 'E:/SJTU/实习/国泰海通/barra因子/data_base/fund_nav/中证500净值数据.xlsx'
+FUND_NAV_PATH = 'E:/SJTU/实习/国泰海通/barra因子/data_base/fund_nav/纯中证500净值数据.xlsx'
 FAC_RET_PATH = 'E:/SJTU/实习/国泰海通/barra因子/data_base/fac_ret/中证500/factor_returns_07_2604.pkl'
 desdir = 'E:/SJTU/实习/国泰海通/barra因子/result/管理人暴露'
 FREQ = 'W'  # 可以设置为 'W' 或 'D'
 
+# 创建日志目录
+log_dir = 'E:/SJTU/实习/国泰海通/barra因子/logs'
+if not os.path.exists(log_dir):
+    os.makedirs(log_dir)
+
+# 配置日志
+log_filename = f"{log_dir}/factor_exposure_{datetime.now().strftime('%Y%m%d')}.log"
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(log_filename, encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+
 # 创建结果目录
 if not os.path.exists(desdir):
     os.makedirs(desdir)
-    print(f"Created directory: {desdir}")
+    logging.info(f"Created directory: {desdir}")
 
 # 读取私募产品净值数据
 def read_fund_nav():
-    print("读取私募产品净值数据...")
+    logging.info("读取私募产品净值数据...")
     df = pd.read_excel(FUND_NAV_PATH, index_col=0)
-    print(f"数据形状: {df.shape}")
-    print(f"日期范围: {df.index.min()} 到 {df.index.max()}")
-    print(f"产品数量: {len(df.columns)}")
+    logging.info(f"数据形状: {df.shape}")
+    logging.info(f"日期范围: {df.index.min()} 到 {df.index.max()}")
+    logging.info(f"产品数量: {len(df.columns)}")
     return df
 
 # 读取因子收益率数据
 def read_factor_returns(start_date, end_date):
-    print("读取因子收益率数据...")
+    logging.info("读取因子收益率数据...")
     if os.path.exists(FAC_RET_PATH):
         with open(FAC_RET_PATH, 'rb') as f:
             factor_df = pickle.load(f)
-        print(f"因子数据形状: {factor_df.shape}")
-        print(f"因子数量: {len(factor_df.columns)}")
+        logging.info(f"因子数据形状: {factor_df.shape}")
+        logging.info(f"因子数量: {len(factor_df.columns)}")
         
         # 筛选日期范围
         factor_df = factor_df.loc[(factor_df.index >= start_date) & (factor_df.index <= end_date)]
-        print(f"筛选后因子数据形状: {factor_df.shape}")
+        logging.info(f"筛选后因子数据形状: {factor_df.shape}")
         
         # 根据 FREQ 参数处理因子收益率
         if FREQ == 'W':
@@ -68,20 +85,20 @@ def read_factor_returns(start_date, end_date):
             # 构建每周因子收益率 DataFrame
             if weekly_factor_returns:
                 factor_df = pd.DataFrame(weekly_factor_returns, index=weekly_dates[1:])
-                print(f"转换为周频后因子数据形状: {factor_df.shape}")
-                print(f"周频因子收益率日期范围: {factor_df.index.min()} 到 {factor_df.index.max()}")
+                logging.info(f"转换为周频后因子数据形状: {factor_df.shape}")
+                logging.info(f"周频因子收益率日期范围: {factor_df.index.min()} 到 {factor_df.index.max()}")
         else:
             # FREQ == 'D'，保持不变
-            print("使用日频因子收益率")
+            logging.info("使用日频因子收益率")
         
         return factor_df
     else:
-        print(f"因子数据文件不存在: {FAC_RET_PATH}")
+        logging.error(f"因子数据文件不存在: {FAC_RET_PATH}")
         return None
 
 # 计算因子暴露（使用EWMA时间加权回归 + 主成分分析）
 def calculate_factor_exposure(fund_returns, factor_returns, window=12, half_life=3, n_components=0.9, normalize_industry=False):
-    print("计算因子暴露...")
+    logging.info("计算因子暴露...")
     exposure_dict = {}
     stats_dict = {}
     
@@ -94,13 +111,13 @@ def calculate_factor_exposure(fund_returns, factor_returns, window=12, half_life
     style_factors = [col for col in factor_matrix.columns if all(ord(c) < 128 for c in col)]  # 英文列名
     industry_factors = [col for col in factor_matrix.columns if any(ord(c) >= 128 for c in col)]  # 中文列名
     
-    print(f"风格因子数量: {len(style_factors)}")
-    print(f"行业因子数量: {len(industry_factors)}")
-    print(f"对齐后数据形状 - 基金收益: {fund_returns.shape}, 因子矩阵: {factor_matrix.shape}")
-    print(f"当前频率: {'周频' if FREQ == 'W' else '日频'}")
-    print(f"使用的窗口大小: {window}, 半衰期: {half_life}")
-    print(f"主成分分析保留方差比例: {n_components}")
-    print(f"是否对行业暴露归一化: {normalize_industry}")
+    logging.info(f"风格因子数量: {len(style_factors)}")
+    logging.info(f"行业因子数量: {len(industry_factors)}")
+    logging.info(f"对齐后数据形状 - 基金收益: {fund_returns.shape}, 因子矩阵: {factor_matrix.shape}")
+    logging.info(f"当前频率: {'周频' if FREQ == 'W' else '日频'}")
+    logging.info(f"使用的窗口大小: {window}, 半衰期: {half_life}")
+    logging.info(f"主成分分析保留方差比例: {n_components}")
+    logging.info(f"是否对行业暴露归一化: {normalize_industry}")
     
     for fund in fund_returns.columns:
         fund_data = fund_returns[fund].dropna()
@@ -109,7 +126,7 @@ def calculate_factor_exposure(fund_returns, factor_returns, window=12, half_life
         industry_sum_list = []
         num_negative_list = []
         
-        for i in range(window, len(fund_data)):
+        for i in range(window, len(fund_data)+1):
             # 滚动窗口数据
             window_data = fund_data.iloc[i-window:i]
             window_factors = factor_matrix.loc[window_data.index]
@@ -127,14 +144,14 @@ def calculate_factor_exposure(fund_returns, factor_returns, window=12, half_life
                 # 对所有因子进行主成分分析
                 pca = PCA(n_components=n_components)
                 X_pca = pca.fit_transform(X)
-                print(f"所有因子PCA后生成了{X_pca.shape[1]}个主成分因子")
+                logging.debug(f"所有因子PCA后生成了{X_pca.shape[1]}个主成分因子")
 
                 # 回归分析
                 X_with_intercept = np.hstack([np.ones((window, 1)), X_pca])
                 weighted_X = X_with_intercept * weights[:, np.newaxis]
                 weighted_y = y * weights
                 
-                r_squared = None
+                r_squared_pca = None
                 industry_sum = None
                 num_negative = None
                 
@@ -158,6 +175,7 @@ def calculate_factor_exposure(fund_returns, factor_returns, window=12, half_life
                     # rss_raw = np.sum((weighted_y - y_pred_raw)**2)
                     # r_squared_raw = 1 - (rss_raw / tss)
                     print(f"PCA回归R方: {r_squared_pca:.4f}")
+                    logging.debug(f"PCA回归R方: {r_squared_pca:.4f}")
                     
                     # # 为前5个基金的第一个窗口绘制拟合图
                     # if fund in fund_returns.columns[:5] and i == window:
@@ -203,10 +221,10 @@ def calculate_factor_exposure(fund_returns, factor_returns, window=12, half_life
                         industry_sum = industry_beta.sum()
                         # 检查是否含有负数
                         num_negative = sum(b < 0 for b in industry_beta)
-                        print(f"行业暴露之和: {industry_sum:.4f}, 是否含有负数: {num_negative}")
+                        logging.debug(f"行业暴露之和: {industry_sum:.4f}, 是否含有负数: {num_negative}")
                 except Exception as e:
                     beta = np.zeros(factor_matrix.shape[1])
-                    print(f"错误: {e}")
+                    logging.error(f"错误: {e}")
                 
                 exposures.append(beta)
                 r_squared_pca_list.append(r_squared_pca)
@@ -222,7 +240,7 @@ def calculate_factor_exposure(fund_returns, factor_returns, window=12, half_life
         # 构建暴露DataFrame
         exposure_df = pd.DataFrame(
             exposures, 
-            index=fund_data.index[window:],
+            index=fund_data.index[window-1:],
             columns=factor_matrix.columns
         )
         exposure_df.to_excel(f"{desdir}/exposure/{fund}_exposure.xlsx", index=True)
@@ -233,15 +251,15 @@ def calculate_factor_exposure(fund_returns, factor_returns, window=12, half_life
             'r_squared_pca': r_squared_pca_list,
             'industry_sum': industry_sum_list,
             'num_negative': num_negative_list
-        }, index=fund_data.index[window:])
+        }, index=fund_data.index[window-1:])
         stats_dict[fund] = stats_df
     
-    print(f"完成因子暴露计算，共 {len(exposure_dict)} 个产品")
+    logging.info(f"完成因子暴露计算，共 {len(exposure_dict)} 个产品")
     return exposure_dict, stats_dict
 
 # 绘制每个基金每个因子的暴露和收益图
 def plot_factor_exposure_returns(exposure_dict, factor_returns):
-    print("绘制每个基金每个风格因子的暴露和收益图...")
+    logging.info("绘制每个基金每个风格因子的暴露和收益图...")
     
     # 创建结果目录
     plot_dir = f"{desdir}/exposure_with_returns_plot"
@@ -316,11 +334,11 @@ def plot_factor_exposure_returns(exposure_dict, factor_returns):
                     plot_path = f"{fund_dir}/{safe_factor_name}_exposure_with_returns.png"
                     plt.savefig(plot_path)
                     plt.close()
-                    print(f"风格因子暴露和收益图已保存到: {plot_path}")
+                    logging.info(f"风格因子暴露和收益图已保存到: {plot_path}")
 
 # 计算主动暴露因子
 def calculate_active_exposure(exposure_dict, fund_returns):
-    print("计算主动暴露因子...")
+    logging.info("计算主动暴露因子...")
     active_exposure_dict = {}
     
     # 获取所有基金名称
@@ -329,7 +347,7 @@ def calculate_active_exposure(exposure_dict, fund_returns):
     # 第一个fund是指数
     index_fund = fund_names[0]
     index_exposure = exposure_dict[index_fund]
-    print(f"识别指数产品: {index_fund}")
+    logging.info(f"识别指数产品: {index_fund}")
     
     for fund, exposure_df in exposure_dict.items():
         # 区分风格因子和行业因子
@@ -396,14 +414,14 @@ def calculate_active_exposure(exposure_dict, fund_returns):
         # 保存到字典
         active_exposure_dict[fund] = active_data
     
-    print("完成主动暴露因子计算")
+    logging.info("完成主动暴露因子计算")
     return active_exposure_dict
 
 # 绘制净值与暴露的关系图
 def plot_net_value_exposure(net_value, daily_style_exposure, daily_industry_exposure, fund):
     # 确保net_value不为空
     if len(net_value) == 0:
-        print(f"No data to plot for {fund}")
+        logging.warning(f"No data to plot for {fund}")
         return
     
     plt.figure(figsize=(15, 8))
@@ -446,13 +464,13 @@ def plot_net_value_exposure(net_value, daily_style_exposure, daily_industry_expo
     plt.title(f'{fund} - Net Value vs Exposure')
     plt.grid(True)
     plt.tight_layout()
-    plt.savefig(f'{desdir}/exposure_nav/{fund}_net_value_exposure.png')
+    plt.savefig(f'{desdir}/excess_exposure_nav/{fund}_net_value_exposure.png')
     plt.close()
-    print(f"Net value vs exposure plot saved as {fund}_net_value_exposure.png")
+    logging.info(f"Net value vs exposure plot saved as {fund}_net_value_exposure.png")
 
 # 计算滚动相关性并绘图
 def calculate_rolling_correlation(exposure_dict, fund_returns, windows=[24, 52, 104]): #周频
-    print("计算滚动相关性...")
+    logging.info("计算滚动相关性...")
     
     for fund, active_data in exposure_dict.items():
         exposure_df = active_data['exposure'] #relative_exposure
@@ -478,7 +496,7 @@ def calculate_rolling_correlation(exposure_dict, fund_returns, windows=[24, 52, 
             # 绘制相关性图表
             plot_rolling_correlation(correlation_dict, fund)
     
-    print("完成滚动相关性计算和绘图")
+    logging.info("完成滚动相关性计算和绘图")
 
 # 绘制滚动相关性图表
 def plot_rolling_correlation(correlation_dict, fund):
@@ -504,7 +522,7 @@ def plot_rolling_correlation(correlation_dict, fund):
     plt.tight_layout()
     plt.savefig(f'{desdir}/rolling_corr/{fund}_rolling_correlation.png')
     plt.close()
-    print(f"Rolling correlation plot saved as {fund}_rolling_correlation.png")
+    logging.info(f"Rolling correlation plot saved as {fund}_rolling_correlation.png")
 
 # 绘制风格因子收益和pure alpha贡献图
 def plot_style_alpha_contribution(rank_df, style_cols, fund):
@@ -547,17 +565,17 @@ def plot_style_alpha_contribution(rank_df, style_cols, fund):
     plt.grid(True)
     
     # 保存图表
-    # plot_dir = f"{desdir}/decompose_nav_plots"
-    # if not os.path.exists(plot_dir):
-    #     os.makedirs(plot_dir)
-    # plot_path = f"{plot_dir}/{fund}_style_alpha.png"
-    # plt.savefig(plot_path)
+    plot_dir = f"{desdir}/decompose_nav_plots"
+    if not os.path.exists(plot_dir):
+        os.makedirs(plot_dir)
+    plot_path = f"{plot_dir}/{fund}_style_alpha.png"
+    plt.savefig(plot_path)
     plt.close()
-    #print(f"风格因子收益和pure alpha图已保存到: {plot_path}")
+    logging.info(f"风格因子收益和pure alpha图已保存到: {plot_path}")
     
 # 计算pure alpha并分析排位
 def calculate_pure_alpha(fund_returns, exposure_dict, factor_returns):
-    print("计算pure alpha并分析排位...")
+    logging.info("计算pure alpha并分析排位...")
     
     # 创建结果目录
     alpha_dir = f"{desdir}/pure_alpha"
@@ -583,7 +601,7 @@ def calculate_pure_alpha(fund_returns, exposure_dict, factor_returns):
             # 计算纯alpha
             # 确保因子暴露和因子收益率的列顺序一致
             factor_cols = [col for col in exposure.columns if col in factor_ret.columns]
-            print(f"计算pure alpha用到的因子个数：{len(factor_cols)}")
+            logging.debug(f"计算pure alpha用到的因子个数：{len(factor_cols)}")
             exposure = exposure[factor_cols]
             factor_ret = factor_ret[factor_cols]
             
@@ -597,6 +615,7 @@ def calculate_pure_alpha(fund_returns, exposure_dict, factor_returns):
             
             # 计算因子贡献
             factor_contribution = (exposure * factor_ret).sum(axis=1)
+            logging.debug(f"因子贡献率所用因子个数：{len(factor_cols)}")
             # 计算pure alpha
             pure_alpha = fund_ret - factor_contribution
             
@@ -606,7 +625,7 @@ def calculate_pure_alpha(fund_returns, exposure_dict, factor_returns):
             alpha_dict[f'{fund}_style'] = style_factor_returns
     
     # 计算排位
-    print("计算排位...")
+    logging.info("计算排位...")
     rank_dict = {}
     for fund in fund_names:
         if fund in alpha_dict:
@@ -654,7 +673,7 @@ def calculate_pure_alpha(fund_returns, exposure_dict, factor_returns):
             rank_dict[fund] = rank_df
     
     # 保存结果
-    print("保存结果...")
+    logging.info("保存结果...")
     # 创建汇总DataFrame
     all_alpha_data = []
     for fund, rank_df in rank_dict.items():
@@ -672,9 +691,9 @@ def calculate_pure_alpha(fund_returns, exposure_dict, factor_returns):
         # 输出到Excel
         alpha_file = f"{alpha_dir}/pure_alpha_ranking.xlsx"
         combined_alpha.to_excel(alpha_file, index=True)
-        print(f"pure alpha及排位信息已输出到: {alpha_file}")
+        logging.info(f"pure alpha及排位信息已输出到: {alpha_file}")
     
-    print("完成pure alpha计算和排位分析")
+    logging.info("完成pure alpha计算和排位分析")
     return alpha_dict, rank_dict
 
 
@@ -685,7 +704,7 @@ def main():
     
     # 计算日收益率
     fund_returns = fund_nav.pct_change()#.dropna()
-    print(f"收益率数据形状: {fund_returns.shape}")
+    logging.info(f"收益率数据形状: {fund_returns.shape}")
     
     # 2. 读取因子数据
     start_date = fund_returns.index.min()
@@ -697,16 +716,16 @@ def main():
         exposure_dict, stats_dict = calculate_factor_exposure(fund_returns, factor_returns)
         
         # 3.5. 绘制每个基金每个因子的暴露和收益图
-        #plot_factor_exposure_returns(exposure_dict, factor_returns)
+        plot_factor_exposure_returns(exposure_dict, factor_returns)
         
         # # 4. 计算主动暴露因子
-        # active_exposure_dict = calculate_active_exposure(exposure_dict, fund_returns)
+        active_exposure_dict = calculate_active_exposure(exposure_dict, fund_returns)
         
         # # 5. 计算滚动相关性并绘图
         # calculate_rolling_correlation(active_exposure_dict, fund_returns)
         
         # 6. 汇总统计信息并输出到Excel
-        print("汇总统计信息并输出到Excel...")
+        logging.info("汇总统计信息并输出到Excel...")
         # 创建汇总统计信息的目录
         stats_dir = f"{desdir}/stats"
         if not os.path.exists(stats_dir):
@@ -724,33 +743,33 @@ def main():
         if all_stats:
             combined_stats = pd.concat(all_stats)
             # 重新排列列顺序
-            combined_stats = combined_stats[['fund', 'r_squared_pca', 'r_squared_raw', 'industry_sum', 'num_negative']]
+            combined_stats = combined_stats[['fund', 'r_squared_pca', 'industry_sum', 'num_negative']]
             # 输出到Excel
             stats_file = f"{stats_dir}/all_fund_stats.xlsx"
             combined_stats.to_excel(stats_file, index=True)
-            print(f"统计信息已输出到: {stats_file}")
+            logging.info(f"统计信息已输出到: {stats_file}")
         
         #7. 计算pure alpha并分析排位
         alpha_dict, rank_dict = calculate_pure_alpha(fund_returns, exposure_dict, factor_returns)
         
         # 8. 为所有基金绘制风格因子收益和pure alpha图
-        print("为所有基金绘制风格因子收益和pure alpha图...")
+        logging.info("为所有基金绘制风格因子收益和pure alpha图...")
         for fund in rank_dict:
             rank_df = rank_dict[fund]
             # 提取风格因子列
-            style_cols = [col for col in rank_df.columns if col not in ['fund', 'pure_alpha', 'rank_all', 'rank_self']] #"comovement"
+            style_cols = [col for col in rank_df.columns if col not in ['fund', 'pure_alpha', 'rank_all', 'rank_self',"comovement"]] #"comovement"
             if style_cols:
                 plot_style_alpha_contribution(rank_df, style_cols, fund)
         
         
 
     else:
-        print("无法进行分析，因子数据缺失")
+        logging.error("无法进行分析，因子数据缺失")
 
 if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        print(f"Error: {e}")
+        logging.error(f"Error: {e}")
         import traceback
         traceback.print_exc()
