@@ -3,6 +3,9 @@ import numpy as np
 import os
 import pickle
 import matplotlib.pyplot as plt
+from collections import defaultdict
+
+
 
 plt.rcParams['font.sans-serif'] = ['SimHei']
 plt.rcParams['axes.unicode_minus'] = False
@@ -79,6 +82,7 @@ def main():
         '2022-12-31', '2021-12-31', '2020-12-31'
     ])
     
+    zero_ids = defaultdict(list)
     for code, group in grouped:
         print(f"   处理编码: {code}")
         
@@ -97,6 +101,8 @@ def main():
         zero_dates = exposure_df[zero_mask].index
         
         if not zero_dates.empty:
+            zero_ids[code].append(exposure_df.index[0]) #起始日期+
+            zero_ids[code].append(zero_dates) #空缺日期
             latest_zero_date = zero_dates.max()
             exposure_df = exposure_df[exposure_df.index > latest_zero_date]
             print(f"   - 发现全部为0的行，从 {latest_zero_date.strftime('%Y-%m-%d')} 之后开始")
@@ -221,8 +227,11 @@ def main():
     index_returns = fund_nav.iloc[:, 0].pct_change().dropna()
     
     exreturns_dir = f"{desdir}/EXreturns"
+    exnav_dir = f"{desdir}/EXnav"
     if not os.path.exists(exreturns_dir):
         os.makedirs(exreturns_dir)
+    if not os.path.exists(exnav_dir):
+        os.makedirs(exnav_dir)
     
     for code in all_factor_contributions.keys():
         if str(code) in fund_nav.columns:
@@ -244,7 +253,12 @@ def main():
                     result_df[english_factor_name] = contributions.loc[common_dates, factor]
             
             result_df.to_excel(f"{exreturns_dir}/{code}_超额收益与因子贡献.xlsx")
-            print(f"   - 编码 {code} 超额收益与因子贡献已保存")
+            
+            nav_df = (1 + result_df).cumprod()
+            nav_df = nav_df / nav_df.iloc[0]
+            nav_df.to_excel(f"{exnav_dir}/{code}_超额收益与因子贡献[净值].xlsx")
+            
+            print(f"   - 编码 {code} 超额收益与因子贡献及净值已保存")
         else:
             print(f"   - 编码 {code} 在净值数据中不存在，跳过")
 
