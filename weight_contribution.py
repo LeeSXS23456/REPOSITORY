@@ -5,7 +5,6 @@ from helpfunc import *
 import os
 srcdir = "E:/SJTU/实习/国泰海通/barra因子/data_base/excess_exposure"
 desdir = "E:/SJTU/实习/国泰海通/业绩回测/result/中证500指增产品各收益回测_超额收益贡献"
-trddir = "E:/SJTU/实习/国泰海通/barra因子/data_base"
 style_factors = [
     "账面市值比因子累计收益",
     "非线性市值因子累计收益",
@@ -18,8 +17,11 @@ style_factors = [
     "残余波动率因子累计收益",
     "成长因子累计收益"
 ]
-trading_dates = pd.read_pickle(f"{trddir}/trading_dates.pkl")
-trading_dates = pd.to_datetime(trading_dates)
+id_df = pd.read_excel(f"{srcdir}/脱敏barra暴露偏离数据2020-2026.xlsx",index_col=0)
+codes = id_df[id_df['基准'] == 905]['编码'].unique().tolist()
+codes = sorted(codes)
+print(f"   共有 {len(codes)} 个编码",codes)
+
 
 if not os.path.exists(desdir):
     os.makedirs(desdir)
@@ -40,14 +42,8 @@ print(f"   barra累计超额收益数据形状: {barra_df.shape}")
 print(f"   累计超额收益分解数据形状: {decompose_df.shape}")
 
 print("\n2. 按编码分组处理...")
-if "编码" not in barra_df.columns:
-    print("   警告: barra_df 中没有'编码'列")
-    codes = barra_df.columns.tolist()
-else:
-    grouped = barra_df.groupby("编码")
-    codes = list(grouped.groups.keys())
+grouped = barra_df.groupby("编码")
 
-print(f"   共有 {len(codes)} 个编码")
 
 all_results = {}
 
@@ -56,10 +52,11 @@ all_results = {}
 for code in codes:
     print(f"\n   处理编码: {code}")
     
-    if "编码" in barra_df.columns:
-        barra_group = grouped.get_group(code)
-    else:
-        barra_group = barra_df[[code]]
+    if code not in grouped.groups:
+        print(f"   - 编码 {code} 不存在于分组中，跳过")
+        continue
+    
+    barra_group = grouped.get_group(code)
     print(barra_group)
     zero_mask = (barra_group[style_factors] == 0).all(axis=1) 
     zero_dates = barra_group[zero_mask].index
@@ -141,20 +138,20 @@ for col in all_cols:
     
     periods = sorted(all_periods)
     
-    # with pd.ExcelWriter(output_path) as writer:
-    #     for period in sorted(periods):
-    #         period_data = []
-    #         codes = []
+    with pd.ExcelWriter(output_path) as writer:
+        for period in sorted(periods):
+            period_data = []
+            codes = []
             
-    #         for code, result in col_results.items():
-    #             row = result[result['时间区间'] == period]
-    #             if not row.empty:
-    #                 period_data.append(row.iloc[0].drop('时间区间').values)
-    #                 codes.append(code)
+            for code, result in col_results.items():
+                row = result[result['时间区间'] == period]
+                if not row.empty:
+                    period_data.append(row.iloc[0].drop('时间区间').values)
+                    codes.append(code)
             
-    #         if period_data:
-    #             period_df = pd.DataFrame(period_data, index=codes, columns=list(col_results.values())[0].columns.drop('时间区间'))
-    #             period_df.to_excel(writer, sheet_name=str(period)[:31])
+            if period_data:
+                period_df = pd.DataFrame(period_data, index=codes, columns=list(col_results.values())[0].columns.drop('时间区间'))
+                period_df.to_excel(writer, sheet_name=str(period)[:31])
     
     print(f"   - {col} 回测结果已保存")
     pd.DataFrame(zero_ids).T.to_excel(f"{desdir}/基金中断区间.xlsx")
