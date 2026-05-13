@@ -116,151 +116,175 @@ def main():
             print(f"   - 编码 {code} 处理后数据为空，跳过")
             continue
         
-        exposure_df_shifted = exposure_df.shift(1).dropna()
-        common_dates = exposure_df_shifted.index.intersection(factor_returns.index)
+        all_exposures[code] = exposure_df
+    
+    print("\n3. 风格因子超额暴露分析...")
+    import scipy.stats as stats
+    
+    analysis_results = {}
+    
+    for code, exposure_df in all_exposures.items():
+        years = exposure_df.index.year.unique()
+        time_periods = ['成立以来'] + [f'{year}年' for year in sorted(years)]
         
-        if len(common_dates) == 0:
-            print(f"   - 编码 {code} 没有匹配的日期，跳过")
-            continue
+        code_results = {}
         
-        exposure_aligned = exposure_df_shifted.loc[common_dates]
-        factor_returns_aligned = factor_returns.loc[common_dates]
-        
-        factor_contributions = pd.DataFrame(index=common_dates)
-        for style_factor in style_factors:
-            factor_name = factor_name_map[style_factor]
-            if factor_name in factor_returns_aligned.columns:
-                factor_contributions[style_factor] = exposure_aligned[style_factor] * factor_returns_aligned[factor_name]
-        
-        all_factor_contributions[code] = factor_contributions
-        all_exposures[code] = exposure_df.loc[common_dates]
-        print(f"   - 编码 {code} 处理完成，有效日期数: {len(common_dates)}")
-    
-    print(f"\n   处理完成的编码数量: {len(all_factor_contributions)}")
-    
-    # style_factor_dir = f"{desdir}/风格因子收益贡献净值"
-    # if not os.path.exists(style_factor_dir):
-    #     os.makedirs(style_factor_dir)
-    
-    # for code, contributions in all_factor_contributions.items():
-    #     plt.figure(figsize=(15, 10))
-    #     for factor in style_factors:
-    #         if factor in contributions.columns:
-    #             cum_return = (1 + contributions[factor]).cumprod()
-    #             if not cum_return.empty:
-    #                 cum_return = cum_return / cum_return.iloc[0]
-    #                 plt.plot(cum_return.index, cum_return.values, label=factor_name_map[factor], alpha=0.7)
-    #     plt.title(f'Code {code} - Style Factor Net Value')
-    #     plt.xlabel('Date')
-    #     plt.ylabel('Net Value')
-    #     plt.legend()
-    #     plt.grid(True)
-    #     plt.xticks(rotation=45)
-    #     plt.tight_layout()
-    #     plt.savefig(f"{style_factor_dir}/{code}_因子净值曲线.png")
-    #     plt.close()
-    #     print(f"   - 编码 {code} 因子净值曲线已保存")
-    
-    # for code, contributions in all_factor_contributions.items():
-    #     code_dir = f"{desdir}/EXexposure_with_EXfactor_return/{code}"
-    #     if not os.path.exists(code_dir):
-    #         os.makedirs(code_dir)
-        
-    #     exposure_df = all_exposures[code]
-        
-    #     for factor in style_factors:
-    #         if factor in contributions.columns and factor in exposure_df.columns:
-    #             fig, ax1 = plt.subplots(figsize=(15, 8))
-                
-    #             common_dates = contributions.index.intersection(exposure_df.index)
-    #             if len(common_dates) == 0:
-    #                 continue
-                
-    #             exposure_data = exposure_df.loc[common_dates, factor]
-    #             contribution_data = contributions.loc[common_dates, factor]
-                
-    #             factor_name = factor_name_map[factor]
-    #             if factor_name in factor_returns.columns:
-    #                 factor_return_data = factor_returns.loc[common_dates, factor_name]
-    #             else:
-    #                 factor_return_data = pd.Series(index=common_dates)
-                
-    #             ax1.bar(exposure_data.index, exposure_data.values, alpha=0.7, label=f'{factor_name} Exposure', color='blue')
-    #             ax1.set_xlabel('Date')
-    #             ax1.set_ylabel(f'{factor_name} Exposure', color='blue')
-    #             ax1.tick_params(axis='y', labelcolor='blue')
-    #             ax1.set_xticks(exposure_data.index[::max(1, len(exposure_data)//10)])
-    #             ax1.set_xticklabels(exposure_data.index[::max(1, len(exposure_data)//10)].strftime('%Y-%m-%d'), rotation=45)
-                
-    #             ax2 = ax1.twinx()
-                
-    #             cum_return_contribution = (1 + contribution_data).cumprod()
-    #             if not cum_return_contribution.empty:
-    #                 cum_return_contribution = cum_return_contribution / cum_return_contribution.iloc[0]
-    #                 ax2.plot(cum_return_contribution.index, cum_return_contribution.values, 'r-', linewidth=2, label=f'{factor_name} Contribution')
-                
-    #             if not factor_return_data.empty:
-    #                 cum_return_factor = (1 + factor_return_data).cumprod()
-    #                 cum_return_factor = cum_return_factor / cum_return_factor.iloc[0]
-    #                 ax2.plot(cum_return_factor.index, cum_return_factor.values, 'g--', linewidth=2, label=f'{factor_name} Factor Return')
-                
-    #             ax2.set_ylabel('Net Value', color='red')
-    #             ax2.tick_params(axis='y', labelcolor='red')
-                
-    #             lines1, labels1 = ax1.get_legend_handles_labels()
-    #             lines2, labels2 = ax2.get_legend_handles_labels()
-    #             ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
-                
-    #             plt.title(f'Code {code} - {factor_name} Exposure & Net Value')
-    #             plt.grid(True)
-    #             plt.tight_layout()
-    #             plt.savefig(f"{code_dir}/{factor_name}_exposure_net_value.png")
-    #             plt.close()
-
-    #     print(f"   - 编码 {code} 暴露净值图片已保存")
-    
-    print("\n5. 计算超额收益率并保存...")
-    fund_nav = pd.read_excel(FUND_NAV_PATH, index_col=0)
-    fund_nav.index = pd.to_datetime(fund_nav.index)
-    fund_nav.columns = fund_nav.columns.astype(str)
-    
-    index_returns = fund_nav.iloc[:, 0].pct_change().dropna()
-    
-    exreturns_dir = f"{desdir}/EXreturns"
-    exnav_dir = f"{desdir}/EXnav"
-    if not os.path.exists(exreturns_dir):
-        os.makedirs(exreturns_dir)
-    if not os.path.exists(exnav_dir):
-        os.makedirs(exnav_dir)
-    
-    for code in all_factor_contributions.keys():
-        if str(code) in fund_nav.columns:
-            fund_returns = fund_nav[str(code)].pct_change().dropna()
+        for period in time_periods:
+            if period == '成立以来':
+                period_data = exposure_df
+            else:
+                year = int(period[:4])
+                period_data = exposure_df[exposure_df.index.year == year]
             
-            excess_returns = fund_returns - index_returns.reindex(fund_returns.index)
+            if len(period_data) < 2:
+                continue
             
-            contributions = all_factor_contributions[code]
+            result = {'code': code, '时间段': period}
             
-            common_dates = excess_returns.index.intersection(contributions.index)
-            
-            result_df = pd.DataFrame({
-                'excess_return': excess_returns.loc[common_dates]
-            })
-            
+            t_stats = {}
             for factor in style_factors:
-                if factor in contributions.columns:
-                    english_factor_name = factor_name_map[factor]
-                    result_df[english_factor_name] = contributions.loc[common_dates, factor]
+                if factor in period_data.columns:
+                    data = period_data[factor].dropna()
+                    if len(data) >= 2:
+                        t_stat, p_value = stats.ttest_1samp(data, 0)
+                        t_stats[factor] = t_stat
             
-            result_df.to_excel(f"{exreturns_dir}/{code}_超额收益与因子贡献.xlsx")
+            sorted_t = sorted(t_stats.items(), key=lambda x: abs(x[1]), reverse=True)
+            top3 = sorted_t[:3]
             
-            nav_df = (1 + result_df).cumprod()
-            nav_df = nav_df / nav_df.iloc[0]
-            nav_df.to_excel(f"{exnav_dir}/{code}_超额收益与因子贡献[净值].xlsx")
+            for i, (factor, t_val) in enumerate(top3, 1):
+                result[f'top{i}_因子'] = factor
+                result[f'top{i}_t值'] = t_val
+                data = period_data[factor]#.dropna()
+                result[f'top{i}_平均绝对值'] = data.abs().mean()
             
-            print(f"   - 编码 {code} 超额收益与因子贡献及净值已保存")
-        else:
-            print(f"   - 编码 {code} 在净值数据中不存在，跳过")
+            sig_count = sum(1 for t_val in t_stats.values() if abs(t_val) > 1.645)
+            result['t绝对值>1.645的因子数'] = sig_count
+            
+            total_abs_sum = period_data[style_factors].abs().mean().sum()
+            result['总风格超额暴露强度'] = total_abs_sum
+            
+            reversal_factors = {}
+            for factor in style_factors:
+                if factor in period_data.columns:
+                    data = period_data[factor].dropna()
+                    if len(data) >= 2:
+                        for i in range(len(data) - 1):
+                            x_t = data.iloc[i]
+                            x_t1 = data.iloc[i+1]
+                            if x_t != 0 and x_t * x_t1 < 0:
+                                ratio = -x_t1 / x_t
+                                if ratio > 0.3:
+                                    date = data.index[i+1].strftime('%Y-%m-%d')
+                                    if factor not in reversal_factors or ratio > reversal_factors[factor]['ratio']:
+                                        reversal_factors[factor] = {'ratio': ratio, 'date': date}
+            
+            sorted_reversal = {k: f"{v['ratio']:.2%}@{v['date']}" for k, v in sorted(reversal_factors.items(), key=lambda x: x[1]['ratio'], reverse=True)}
+            result['反转因子'] = str(sorted_reversal) if sorted_reversal else ''
+            
+            code_results[period] = result
+        
+        analysis_results[code] = code_results
+    
+    print("\n4. 输出分析结果...")
+    time_periods = set()
+    for code_results in analysis_results.values():
+        for period in code_results.keys():
+            time_periods.add(period)
+    
+    output_path = f"{desdir}/风格因子超额暴露分析结果.xlsx"
+    with pd.ExcelWriter(output_path) as writer:
+        for period in sorted(time_periods):
+            period_data = []
+            for code, code_results in analysis_results.items():
+                if period in code_results:
+                    period_data.append(code_results[period])
+            
+            if period_data:
+                df = pd.DataFrame(period_data)
+                
+                if '时间段' in df.columns:
+                    df = df.drop('时间段', axis=1)
+                
+                cols = df.columns.tolist()
+                if 't绝对值>1.645的因子数' in cols:
+                    cols.remove('t绝对值>1.645的因子数')
+                    cols.insert(0, 't绝对值>1.645的因子数')
+                if '总风格超额暴露强度' in cols:
+                    cols.remove('总风格超额暴露强度')
+                    cols.insert(1, '总风格超额暴露强度')
+                
+                df = df[cols].set_index('code')
+                df.to_excel(writer, sheet_name=period[:31])
+    
+    print(f"   - 分析结果已保存至: {output_path}")
+
+
+    ###根据因子超额暴露计算因子贡献
+    #     exposure_df_shifted = exposure_df.shift(1).dropna()
+    #     common_dates = exposure_df_shifted.index.intersection(factor_returns.index)
+        
+    #     if len(common_dates) == 0:
+    #         print(f"   - 编码 {code} 没有匹配的日期，跳过")
+    #         continue
+        
+    #     exposure_aligned = exposure_df_shifted.loc[common_dates]
+    #     factor_returns_aligned = factor_returns.loc[common_dates]
+        
+    #     factor_contributions = pd.DataFrame(index=common_dates)
+    #     for style_factor in style_factors:
+    #         factor_name = factor_name_map[style_factor]
+    #         if factor_name in factor_returns_aligned.columns:
+    #             factor_contributions[style_factor] = exposure_aligned[style_factor] * factor_returns_aligned[factor_name]
+        
+    #     all_factor_contributions[code] = factor_contributions
+    #     all_exposures[code] = exposure_df.loc[common_dates]
+    #     print(f"   - 编码 {code} 处理完成，有效日期数: {len(common_dates)}")
+    
+    # print(f"\n   处理完成的编码数量: {len(all_factor_contributions)}")
+    
+    # print("\n5. 计算超额收益率并保存...")
+    # fund_nav = pd.read_excel(FUND_NAV_PATH, index_col=0)
+    # fund_nav.index = pd.to_datetime(fund_nav.index)
+    # fund_nav.columns = fund_nav.columns.astype(str)
+    
+    # index_returns = fund_nav.iloc[:, 0].pct_change().dropna()
+    
+    # exreturns_dir = f"{desdir}/EXreturns"
+    # exnav_dir = f"{desdir}/EXnav"
+    # if not os.path.exists(exreturns_dir):
+    #     os.makedirs(exreturns_dir)
+    # if not os.path.exists(exnav_dir):
+    #     os.makedirs(exnav_dir)
+    
+    # for code in all_factor_contributions.keys():
+    #     if str(code) in fund_nav.columns:
+    #         fund_returns = fund_nav[str(code)].pct_change().dropna()
+            
+    #         excess_returns = fund_returns - index_returns.reindex(fund_returns.index)
+            
+    #         contributions = all_factor_contributions[code]
+            
+    #         common_dates = excess_returns.index.intersection(contributions.index)
+            
+    #         result_df = pd.DataFrame({
+    #             'excess_return': excess_returns.loc[common_dates]
+    #         })
+            
+    #         for factor in style_factors:
+    #             if factor in contributions.columns:
+    #                 english_factor_name = factor_name_map[factor]
+    #                 result_df[english_factor_name] = contributions.loc[common_dates, factor]
+            
+    #         result_df.to_excel(f"{exreturns_dir}/{code}_超额收益与因子贡献.xlsx")
+            
+    #         nav_df = (1 + result_df).cumprod()
+    #         nav_df = nav_df / nav_df.iloc[0]
+    #         nav_df.to_excel(f"{exnav_dir}/{code}_超额收益与因子贡献[净值].xlsx")
+            
+    #         print(f"   - 编码 {code} 超额收益与因子贡献及净值已保存")
+    #     else:
+    #         print(f"   - 编码 {code} 在净值数据中不存在，跳过")
 
 if __name__ == "__main__":
     main()
