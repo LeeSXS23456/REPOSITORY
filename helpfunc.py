@@ -22,7 +22,7 @@ def calculate_performance(nav_series, freq, start_date=None, end_date=None, bmk_
     
     results = []
     
-    def calc_single_period_metrics(nav, days_count, start_date=start_date, end_date=end_date):  
+    def calc_single_period_metrics(nav, start_date=start_date, end_date=end_date):  
 
         if start_date and end_date:
             nav = nav[(nav.index >= start_date)&(nav.index <= end_date)]
@@ -31,12 +31,12 @@ def calculate_performance(nav_series, freq, start_date=None, end_date=None, bmk_
                     '区间收益': np.nan,
                     '年化收益': np.nan, '年化波动': np.nan, '夏普比率': np.nan, '最大回撤': np.nan, '卡玛比率': np.nan}
         
-        total_return = nav.iloc[-1] / nav.iloc[0] 
+        total_return = nav.iloc[-1] / nav.iloc[0] - 1
         returns = nav.pct_change().dropna()
         period_factor = len(returns)
 
-        annualized_return = total_return ** (period_factor / days_count) - 1
-        volatility = returns.std() * np.sqrt(period_factor)
+        annualized_return = (total_return + 1) ** (periods_per_year / period_factor) - 1
+        volatility = returns.std() * np.sqrt(periods_per_year)
         sharpe_ratio = (annualized_return - rf_rate) / volatility if volatility != 0 else np.nan
         
         max_drawdown = (nav / nav.cummax() - 1).min()
@@ -92,9 +92,8 @@ def calculate_performance(nav_series, freq, start_date=None, end_date=None, bmk_
     #函数主体
     nav = nav_series.dropna()
     if len(nav) >= 2:
-        days_count = len(nav) - 1
         
-        overall = calc_single_period_metrics(nav, days_count)
+        overall = calc_single_period_metrics(nav,start_date,end_date)
         results.append(overall)
         if not (start_date and end_date):
             results.extend(calc_yearly_metrics(nav)) 
@@ -109,10 +108,8 @@ def calculate_performance(nav_series, freq, start_date=None, end_date=None, bmk_
         excess_ret = (ret - bmk_ret).fillna(0)
         excess_nav = (1 + excess_ret).cumprod()
         #excess_nav = excess_nav / excess_nav.iloc[0]
-        days_count = len(ret) - 1
-        print(f"共有的天数：{days_count}")
         
-        excess_overall = calc_single_period_metrics(excess_nav, days_count, start_date, end_date)
+        excess_overall = calc_single_period_metrics(excess_nav, start_date, end_date)
         excess_overall['时间区间'] += '(超额)'
         results.append(excess_overall)
         
@@ -146,7 +143,23 @@ def filter_df_zero(df,target_col):
         df = df[df.index > latest_zero_date]
     return df, zero_dates
 
+def filter_df_nan(df,target_col):
+    """
+    df: 输入的DataFrame
+    功能是发现是否存在全为NaN的行，如有，则从此开始取数，从而解决产品中断的问题
+    """
+
+    nan_mask = df[target_col].isna().all(axis=1) 
+    nan_dates = df[nan_mask].index
+    
+    if not nan_dates.empty:
+        latest_nan_date = nan_dates.max()
+        df = df[df.index > latest_nan_date]
+    return df, nan_dates
+
 def align_dates(df1,df2):
+    df1.index = pd.to_datetime(df1.index)
+    df2.index = pd.to_datetime(df2.index)
     common_dates = df1.index.intersection(df2.index)
     df1 = df1.loc[common_dates]
     df2 = df2.loc[common_dates]
