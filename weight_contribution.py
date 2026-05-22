@@ -60,6 +60,7 @@ def run_contribution_analysis(bmk,start_date=None, end_date=None):
         if start_date and end_date:
             if barra_group.index.min() > end_date or barra_group.index.max() < start_date:
                 error_codes[code] = "时间区间超出数据范围"
+                print(f"     警告：{code} 时间区间超出数据范围，跳过该编码")
                 continue
 
         barra_nav = 1 + barra_group
@@ -101,7 +102,10 @@ def run_contribution_analysis(bmk,start_date=None, end_date=None):
     print("\n4. 区间收益分析...")
     #if start_date and end_date:
     interval_results = []
-
+    if not all_results:
+        print("     警告：没有有效数据，跳过该分析")
+        return None
+    
     for code, results in all_results.items():
         row = {'code': code}
         for col in results.keys():
@@ -152,7 +156,7 @@ def run_contribution_analysis(bmk,start_date=None, end_date=None):
 
 
 if __name__ == "__main__":
-    start_dt = pd.to_datetime('2025-11-01')
-    end_dt = pd.to_datetime('2026-01-31')
+    start_dt = pd.to_datetime('2025-06-01')
+    end_dt = pd.to_datetime('2026-08-31')
     bmk = 905 #905,852,932000
     run_contribution_analysis(bmk,start_dt, end_dt)
