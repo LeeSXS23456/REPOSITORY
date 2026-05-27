@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 import re
 
 def is_chinese(text):
@@ -36,6 +37,7 @@ def analyze_portfolio(df_copy, df, w_col, barra_cols, output_path=None):
     df['combined_weight'] = df[w_col] + df["weight"]
     df_copy['combined_weight'] = df_copy[w_col] + df_copy["weight"]
 
+    df_copy["ret_rank"] = df_copy["ret"].apply(lambda x: np.sum(x >= df_copy["ret"])) / len(df_copy)
 
     # 1. 分类处理barra_cols
     english_cols = [col for col in barra_cols if not is_chinese(col)]
@@ -137,9 +139,69 @@ def analyze_portfolio(df_copy, df, w_col, barra_cols, output_path=None):
         'portfolio_stats': portfolio_stats
     }
 
+def calculate_alpha_factor_exposure(df, w_cols=None):
+    """
+    计算组合在alpha因子上的配置情况（向量化实现）
+    
+    参数:
+        df: 持仓信息DataFrame，包含权重列和alpha因子列
+        w_cols: 权重列列表，默认为['w_opt_0.01', 'w_opt_0.1', 'w_opt_0.3', 'w_opt_0.5', 'w_opt_1', 'weight', "free_circulation"]
+    
+    返回:
+        dict: 包含权重总和和因子暴露计算结果的字典
+    """
+    if w_cols is None:
+        w_cols = ['w_opt_0.01', 'w_opt_0.1', 'w_opt_0.3', 'w_opt_0.5', 'w_opt_1', 'weight', "free_circulation"]
+    
+    alpha_cols = ['D1', 'D2', 'D3', 'D1_orth', 'D2_orth', 'D3_orth', "ret_rank"]
+    
+    # 确保权重列存在
+    missing_w_cols = [col for col in w_cols if col not in df.columns]
+    if missing_w_cols:
+        raise ValueError(f"权重列 {missing_w_cols} 不存在于DataFrame中")
+    
+    # 确保alpha因子列存在
+    missing_alpha_cols = [col for col in alpha_cols if col not in df.columns]
+    if missing_alpha_cols:
+        raise ValueError(f"Alpha因子列 {missing_alpha_cols} 不存在于DataFrame中")
+    
+    # 1. 计算各权重列的总和（保留四位小数）
+    weight_sums = df[w_cols].sum().round(4).to_dict()
+    
+    # 2. 向量化计算加权平均值
+    # weights_matrix: (n_stocks, n_weights)
+    weights_matrix = df[w_cols].fillna(0).values
+    # alpha_matrix: (n_stocks, n_factors)
+    alpha_matrix = df[alpha_cols].fillna(0).values
+    
+    # 计算权重绝对值之和用于归一化
+    weights_abs_sum = np.abs(weights_matrix).sum(axis=0)  # (n_weights,)
+    weights_abs_sum[weights_abs_sum == 0] = 1  # 避免除零
+    
+    # 加权平均: (n_factors, n_weights) = (n_factors, n_stocks) @ (n_stocks, n_weights) / (n_weights,)
+    weighted_means_matrix = (alpha_matrix.T @ weights_matrix) / weights_abs_sum
+    weighted_means_matrix = weighted_means_matrix.round(4)
+    
+    # 转换为字典格式
+    weighted_means = {}
+    for i, alpha_col in enumerate(alpha_cols):
+        for j, w_col in enumerate(w_cols):
+            weighted_means[f'{alpha_col}_{w_col}'] = weighted_means_matrix[i, j]
+    
+    # 3. 计算简单算术平均
+    simple_means = df[alpha_cols].mean().round(4).to_dict()
+    simple_means = {f'{k}_simple_mean': v for k, v in simple_means.items()}
+    
+    return {
+        'weight_sums': weight_sums,
+        'weighted_means': weighted_means,
+        'simple_means': simple_means
+    }
+
+
 def save_combined_results(all_results, output_path):
     """
-    将所有日期的分析结果整合并保存到单个Excel文件中
+    将所有日期的分析结果整合并保存到单个Excel文件中，包含alpha因子配置分析
     
     参数:
         all_results: 包含所有日期分析结果的列表
@@ -189,6 +251,24 @@ def save_combined_results(all_results, output_path):
     portfolio_stats_df = portfolio_stats_df.T
     portfolio_stats_df.index.name = '日期'
     
+    # 6. 整合 alpha因子配置分析（与前面逻辑一致）
+    alpha_factor_df = pd.DataFrame()
+    for result in all_results:
+        dt = result['date']
+        alpha_result = result.get('alpha_factor')
+        
+        if alpha_result is not None:
+            # 将所有指标合并到一行
+            row_data = {}
+            row_data.update(alpha_result['weight_sums'])
+            row_data.update(alpha_result['weighted_means'])
+            row_data.update(alpha_result['simple_means'])
+            
+            alpha_factor_df[dt] = pd.Series(row_data)
+    
+    alpha_factor_df = alpha_factor_df.T
+    alpha_factor_df.index.name = '日期'
+    
     # 保存到Excel文件
     with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
         port_allocation_en_df.to_excel(writer, sheet_name='port_allocation_en')
@@ -196,15 +276,19 @@ def save_combined_results(all_results, output_path):
         select_active_stats_df.to_excel(writer, sheet_name='select_active_stats')
         hold_active_stats_df.to_excel(writer, sheet_name='hold_active_stats')
         portfolio_stats_df.to_excel(writer, sheet_name='portfolio_stats')
+        
+        # 添加alpha因子配置分析工作表（合并到一张）
+        if not alpha_factor_df.empty:
+            alpha_factor_df.to_excel(writer, sheet_name='alpha_factor_exposure')
     
     print(f"所有日期的分析结果已整合保存到: {output_path}")
 
 # ==================== 使用示例 ====================
 if __name__ == "__main__":
     
-    alpha_name = "D1_orth"
+    alpha_name = "D1"
     w_col = "w_opt_0.01"
-    wdir = f"E:/SJTU/实习/国泰海通/barra因子/result/组合优化/lgb_持仓信息/{alpha_name}_barra正交"
+    wdir = f"E:/SJTU/实习/国泰海通/barra因子/result/组合优化/lgb_持仓信息/{alpha_name}_barra"
     srcdir = "E:/SJTU/实习/国泰海通/barra因子/data_base"
 
     start_dt = "2025-01-02"
@@ -225,7 +309,7 @@ if __name__ == "__main__":
     # 收集所有日期的分析结果
     all_results = []
     
-    for dt in tr_filter_op[1:]:
+    for dt in tr_filter_op[1:]: #1!
         print(f"Processing date: {dt}")
         
         df = pd.read_csv(f"{wdir}/w_opt持仓信息_{alpha_name}_{dt}.csv").set_index("order_book_id")
@@ -243,11 +327,23 @@ if __name__ == "__main__":
         daily_output_path = f"{wdir}/持仓分析报告/{w_col}_{dt}.xlsx"
         results = analyze_portfolio(df_copy, df, w_col, barra_cols, daily_output_path)
         
-        # 添加日期信息并收集结果
+        # 添加日期信息
         results['date'] = dt
+        
+        # 计算并添加alpha因子配置分析结果
+        try:
+            alpha_result = calculate_alpha_factor_exposure(df_copy)
+            results['alpha_factor'] = alpha_result
+        except Exception as e:
+            print(f"计算日期 {dt} 的alpha因子配置时发生错误: {str(e)}")
+            results['alpha_factor'] = None
+        
+        # 收集结果
         all_results.append(results)
+
+        
     
-    # 将所有日期的分析结果整合到单个Excel文件
-    # combined_output_path = f"{wdir}/持仓分析报告/综合分析报告_{w_col}_{start_dt}_to_{end_dt}.xlsx"
-    # save_combined_results(all_results, combined_output_path)
+    #将所有日期的分析结果整合到单个Excel文件（包含alpha因子配置分析）
+    combined_output_path = f"{wdir}/持仓分析报告/综合分析报告_{w_col}_{start_dt}_to_{end_dt}.xlsx"
+    save_combined_results(all_results, combined_output_path)
     
