@@ -45,10 +45,10 @@ def analyze_portfolio(df_copy, df, w_col, barra_cols, output_path=None):
     
     # 计算port_allocation
     port_allocation_en = calculate_port_allocation(df, 'combined_weight', english_cols)
-    port_allocation_en = port_allocation_en.sort_values(ascending=False)
+    #port_allocation_en = port_allocation_en.sort_values(ascending=False)
     
     port_allocation_cn = calculate_port_allocation(df, 'combined_weight', chinese_cols)
-    port_allocation_cn = port_allocation_cn.sort_values(ascending=False)
+    #port_allocation_cn = port_allocation_cn.sort_values(ascending=False)
     
     # 2. 超额持仓股票分析 (select_ids)
     select_ids = df_copy[abs(df_copy[w_col]) > 1e-4].copy()
@@ -286,9 +286,9 @@ def save_combined_results(all_results, output_path):
 # ==================== 使用示例 ====================
 if __name__ == "__main__":
     
-    alpha_name = "D1"
+    alpha_name = "D1_orth"
     w_col = "w_opt_0.01"
-    wdir = f"E:/SJTU/实习/国泰海通/barra因子/result/组合优化/lgb_持仓信息/{alpha_name}_barra"
+    wdir = f"E:/SJTU/实习/国泰海通/barra因子/result/组合优化/lgb_持仓信息/{alpha_name}_barra正交"
     srcdir = "E:/SJTU/实习/国泰海通/barra因子/data_base"
 
     start_dt = "2025-01-02"
@@ -309,7 +309,7 @@ if __name__ == "__main__":
     # 收集所有日期的分析结果
     all_results = []
     
-    for dt in tr_filter_op[1:]: #1!
+    for dt in tr_filter_op[1:]: #2:D1_orth!
         print(f"Processing date: {dt}")
         
         df = pd.read_csv(f"{wdir}/w_opt持仓信息_{alpha_name}_{dt}.csv").set_index("order_book_id")
