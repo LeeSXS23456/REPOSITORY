@@ -31,11 +31,45 @@ def evaluate_factor(pred, ret, sample_weight=None):
     # 计算多空收益
     ls_ret = group_ret.iloc[-1] - group_ret.iloc[0]
     
+    # 获取第1组和第10组的收益
+    group1_ret = group_ret.iloc[0]
+    group10_ret = group_ret.iloc[-1]
+    
+    # 计算贡献度/强度比（根据两组收益符号判断）
+    # 判断两组收益是否同号（都不为0时）
+    if group1_ret != 0 and group10_ret != 0:
+        is_same_sign = np.sign(group1_ret) == np.sign(group10_ret)
+    else:
+        is_same_sign = False
+    
+    if is_same_sign:
+        # ①同号：计算强度比 = 第10组收益 / 第1组收益
+        strength_ratio = group10_ret / group1_ret
+        contribution_type = "强度"
+        group1_contribution_ratio = np.nan
+        group10_contribution_ratio = np.nan
+    else:
+        # ②异号：计算贡献占比
+        if ls_ret != 0:
+            group1_contribution_ratio = (-group1_ret) / ls_ret
+            group10_contribution_ratio = group10_ret / ls_ret
+        else:
+            group1_contribution_ratio = np.nan
+            group10_contribution_ratio = np.nan
+        strength_ratio = np.nan
+        contribution_type = "贡献"
+    
     # 返回结果字典
     return {
         "pearson_ic": pearson_ic,
         "rank_ic": rank_ic,
         "r2": r2,
-        "ls_ret": ls_ret,
+        "ls_ret": ls_ret,# 贡献度/强度指标
+        "group1_ret": group1_ret,          # 第1组收益
+        "group10_ret": group10_ret,        # 第10组收益
+        "strength_ratio": strength_ratio,           # 强度比（同号时）
+        "group1_contribution_ratio": group1_contribution_ratio,  # 第1组贡献占比（异号时）
+        "group10_contribution_ratio": group10_contribution_ratio,  # 第10组贡献占比（异号时）
+        "contribution_type": contribution_type,      # 标记："强度" 或 "贡献"
         "group_ret": group_ret.to_dict()  # Series 转为字典
     }
