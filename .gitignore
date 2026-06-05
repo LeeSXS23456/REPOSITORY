@@ -1,0 +1,43 @@
+# Python 缓存
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# 数据文件（太大，不上传到 GitHub）
+data_base/
+data/
+result/
+intermedia/
+logs/
+report/
+essay/
+
+# Jupyter Notebook 检查点
+.ipynb_checkpoints
+
+# IDE 配置
+.vscode/
+.idea/
+
+# 临时文件
+*.tmp
+*.log
+lgb_log.txt
+~$*.xlsx

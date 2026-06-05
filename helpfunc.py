@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 
-def calculate_performance(nav_series, freq, start_date=None, end_date=None, bmk_nav=None,rf_rate=0.015):
+def calculate_performance(nav_series, freq, start_date=None, end_date=None, bmk_nav=None,rf_rate=0):
 
     """
     计算回测业绩指标
