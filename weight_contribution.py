@@ -4,12 +4,12 @@ from collections import defaultdict
 from helpfunc import *
 import os
 
-# srcdir = "E:/SJTU/实习/国泰海通/barra因子/data_base/excess_exposure"
-# desdir = "E:/SJTU/实习/国泰海通/业绩回测/result/中证500指增产品各收益回测_超额收益贡献"
+srcdir = "E:/SJTU/实习/国泰海通/barra因子/data_base/excess_exposure"
+desdir = "E:/SJTU/实习/国泰海通/业绩回测/result/中证500指增产品各收益回测_超额收益贡献"
 # 获取当前文件所在目录
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-srcdir = os.path.join(BASE_DIR, "data_base", "excess_exposure")
-desdir = os.path.join(BASE_DIR, "result", "管理人暴露","excess_returns_output")  # 输出目录改到项目内
+# BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# srcdir = os.path.join(BASE_DIR, "data_base", "excess_exposure")
+# desdir = os.path.join(BASE_DIR, "result", "管理人暴露","excess_returns_output")  # 输出目录改到项目内
 
 FREQ = 'W'
 
