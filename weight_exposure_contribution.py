@@ -241,7 +241,7 @@ def analyze_exposure_results(input_file, sheet_name='成立以来'):
     return output_file
 
 
-def run_single_period_analysis(nature_period, start_date=None,end_date=None,ret_cols = ["累计超额收益", "累计残差贡献", "累计风格因子贡献"], bmk=905):
+def run_single_period_analysis(nature_period, start_date=None,end_date=None,ret_cols = ["累计超额收益", "累计残差贡献", "累计风格因子贡献"], bmk=905, choice="resid_style"):
     """
     运行单个时间段的分析
     
@@ -249,22 +249,22 @@ def run_single_period_analysis(nature_period, start_date=None,end_date=None,ret_
         nature_period: 时间段描述，如"2024年"、"2024年Q1"、"成立以来"
         ret_cols: 收益指标列名列表
         bmk: 基准代码
+        choice: 分析类型，"exp_ret_vol"为风格暴露vs收益/波动，"resid_style"为残差vs风格贡献
     
     返回:
         corr_results: 相关系数分析结果列表
     """
     print(f"\n{'='*60}")
     print(f"处理时间段: {nature_period}") if nature_period else print(f"处理时间范围: {start_date.strftime('%Y-%m-%d')}_{end_date.strftime('%Y-%m-%d')}")
+    print(f"分析类型: {choice}")
     print('='*60)
     from weight_factor_exposure import run_factor_exposure_analysis
     from weight_contribution import run_contribution_analysis
 
     if nature_period:
         shadow_sd, shadow_ed = parse_nature_period(nature_period)
-        #input_file = f"{srcdir}/风格因子超额暴露分析结果_{bmk}.xlsx"
-        #analyze_exposure_results(input_file, sheet_name=nature_period)
         sheet = nature_period
-        exp_path = f"{srcdir}/风格因子超额暴露分析结果_{bmk}.xlsx"#run_factor_exposure_analysis(bmk,shadow_sd, shadow_ed)
+        exp_path = f"{srcdir}/风格因子超额暴露分析结果_{bmk}.xlsx"
         ret_path = run_contribution_analysis(bmk,shadow_sd, shadow_ed)
     else:
         sheet = f"{start_date.strftime('%Y-%m-%d')}_{end_date.strftime('%Y-%m-%d')}"
@@ -280,67 +280,112 @@ def run_single_period_analysis(nature_period, start_date=None,end_date=None,ret_
             return corr_results
         
         df_exp = exp_xls.parse(sheet, index_col=0)
-        df_ret = pd.read_excel(ret_path, sheet_name="详细信息", index_col=0)
+        df_ret = pd.read_excel(ret_path, sheet_name="详细信息", index_col=0).sort_index()
         
-        merge_dir = f"{srcdir}/综合分析"
+        merge_dir = f"{srcdir}/综合分析_{choice}"
         if not os.path.exists(merge_dir):
             os.makedirs(merge_dir)
         
         output_path = f"{merge_dir}/综合分析结果_{sheet}_{bmk}.xlsx"
         
         with pd.ExcelWriter(output_path) as writer:
-            for col in ret_cols:
-                filtered_ret = df_ret[df_ret["指标"] == col]
-                if nature_period == "成立以来":
-                    filtered_ret = filtered_ret[filtered_ret["时间区间"]==nature_period]
-                
-                merged_df = df_exp.merge(filtered_ret, left_index=True, right_index=True, how='inner')
-                merged_df = merged_df.dropna(how='any')
-                merged_df.to_excel(writer, sheet_name=col[:31])
-                
-                print(f"\n   {col} 相关系数分析:")
-                if '总风格超额暴露强度' in merged_df.columns:
-                    exposure_data = merged_df['总风格超额暴露强度']
+            if choice == "exp_ret_vol":
+                # 原来的逻辑：逐个col循环
+                for col in ret_cols:
+                    filtered_ret = df_ret[df_ret["指标"] == col]
+                    if nature_period == "成立以来":
+                        filtered_ret = filtered_ret[filtered_ret["时间区间"]==nature_period]
                     
-                    if len(exposure_data) < 2:
-                        print(f"     警告：数据量不足（{len(exposure_data)}条），跳过相关系数计算")
-                    else:
-                        if '年化收益' in merged_df.columns:
-                            pearson_r, pearson_p = stats.pearsonr(exposure_data, merged_df['年化收益'])
-                            spearman_r, spearman_p = stats.spearmanr(exposure_data, merged_df['年化收益'])
-                            
-                            corr_results.append({
-                                '时间段': nature_period,
-                                '指标': col,
-                                '相关类型': '总风格超额暴露强度 vs 年化收益',
-                                '皮尔逊系数': pearson_r,
-                                '皮尔逊p值': pearson_p,
-                                '斯皮尔曼系数': spearman_r,
-                                '斯皮尔曼p值': spearman_p
-                            })
+                    merged_df = df_exp.merge(filtered_ret, left_index=True, right_index=True, how='inner')
+                    merged_df = merged_df.dropna(how='any')
+                    merged_df.to_excel(writer, sheet_name=col[:31])
+                    
+                    print(f"\n   {col} 相关系数分析:")
+                    
+                    if '总风格超额暴露强度' in merged_df.columns:
+                        exposure_data = merged_df['总风格超额暴露强度']
                         
-                        if '年化波动' in merged_df.columns:
-                            pearson_r, pearson_p = stats.pearsonr(exposure_data, merged_df['年化波动'])
-                            spearman_r, spearman_p = stats.spearmanr(exposure_data, merged_df['年化波动'])
+                        if len(exposure_data) < 2:
+                            print(f"     警告：数据量不足（{len(exposure_data)}条），跳过相关系数计算")
+                        else:
+                            if '年化收益' in merged_df.columns:
+                                pearson_r, pearson_p = stats.pearsonr(exposure_data, merged_df['年化收益'])
+                                spearman_r, spearman_p = stats.spearmanr(exposure_data, merged_df['年化收益'])
+                                
+                                corr_results.append({
+                                    '时间段': nature_period,
+                                    '指标': col,
+                                    '相关类型': '总风格超额暴露强度 vs 年化收益',
+                                    '皮尔逊系数': pearson_r,
+                                    '皮尔逊p值': pearson_p,
+                                    '斯皮尔曼系数': spearman_r,
+                                    '斯皮尔曼p值': spearman_p
+                                })
                             
-                            corr_results.append({
-                                '时间段': nature_period,
-                                '指标': col,
-                                '相关类型': '总风格超额暴露强度 vs 年化波动',
-                                '皮尔逊系数': pearson_r,
-                                '皮尔逊p值': pearson_p,
-                                '斯皮尔曼系数': spearman_r,
-                                '斯皮尔曼p值': spearman_p
-                            })
+                            if '年化波动' in merged_df.columns:
+                                pearson_r, pearson_p = stats.pearsonr(exposure_data, merged_df['年化波动'])
+                                spearman_r, spearman_p = stats.spearmanr(exposure_data, merged_df['年化波动'])
+                                
+                                corr_results.append({
+                                    '时间段': nature_period,
+                                    '指标': col,
+                                    '相关类型': '总风格超额暴露强度 vs 年化波动',
+                                    '皮尔逊系数': pearson_r,
+                                    '皮尔逊p值': pearson_p,
+                                    '斯皮尔曼系数': spearman_r,
+                                    '斯皮尔曼p值': spearman_p
+                                })
+                    else:
+                        print(f"     警告：未找到 '总风格超额暴露强度' 列")
+            
+            elif choice == "resid_style":
+                # 新逻辑：直接获取两个col的数据，不需要暴露数据
+                col1, col2 = "累计残差贡献", "累计风格因子贡献"
+                
+                filtered_ret1 = df_ret[df_ret["指标"] == col1]
+                filtered_ret2 = df_ret[df_ret["指标"] == col2]
+                if nature_period == "成立以来":
+                    filtered_ret1 = filtered_ret1[filtered_ret1["时间区间"]==nature_period]
+                    filtered_ret2 = filtered_ret2[filtered_ret2["时间区间"]==nature_period]
+                
+                # 重命名列以便合并
+                data1 = filtered_ret1[["区间收益"]].rename(columns={"区间收益": col1})
+                data2 = filtered_ret2[["区间收益"]].rename(columns={"区间收益": col2})
+                
+                # 直接合并两个col的数据
+                merged_df = data1.join(data2, how='inner').dropna()
+                merged_df.to_excel(writer, sheet_name=f"{col1[:15]}_{col2[:15]}")
+                
+                print(f"\n   {col1} vs {col2} 相关系数分析:")
+                
+                if col1 in merged_df.columns and col2 in merged_df.columns:
+                    x_data = merged_df[col1]
+                    y_data = merged_df[col2]
+                    
+                    if len(x_data) >= 2 and len(y_data) >= 2:
+                        pearson_r, pearson_p = stats.pearsonr(x_data, y_data)
+                        spearman_r, spearman_p = stats.spearmanr(x_data, y_data)
+                        
+                        corr_results.append({
+                            '时间段': nature_period,
+                            '指标': f"{col1}+{col2}",
+                            '相关类型': f"{col1} vs {col2}",
+                            '皮尔逊系数': pearson_r,
+                            '皮尔逊p值': pearson_p,
+                            '斯皮尔曼系数': spearman_r,
+                            '斯皮尔曼p值': spearman_p
+                        })
+                    else:
+                        print(f"     警告：数据量不足，跳过计算")
                 else:
-                    print(f"     警告：未找到 '总风格超额暴露强度' 列")
+                    print(f"     警告：缺少必要列")
             
             print(f"\n   - 综合分析结果已保存至: {output_path}")
     
     return corr_results
 
 
-def run_multi_period_analysis(start_year=2020, end_year=2026, end_quarter=1, ret_cols=None, bmk=905):
+def run_multi_period_analysis(start_year=2020, end_year=2026, end_quarter=1, ret_cols=None, bmk=905, choice="resid_style"):
     """
     运行多个时间段的分析并汇总结果
     
@@ -350,23 +395,25 @@ def run_multi_period_analysis(start_year=2020, end_year=2026, end_quarter=1, ret
         end_quarter: 结束季度
         ret_cols: 收益指标列名列表
         bmk: 基准代码
+        choice: 分析类型，"exp_ret_vol"为风格暴露vs收益/波动，"resid_style"为残差vs风格贡献
     """
     if ret_cols is None:
         ret_cols = ["累计超额收益", "累计残差贡献", "累计风格因子贡献"]
     
     periods = generate_time_periods(start_year, end_year, end_quarter)
     print(f"生成的时间段列表: {periods}")
+    print(f"分析类型: {choice}")
     
     all_corr_results = []
     
     for period in periods:
-        results = run_single_period_analysis(period, ret_cols=ret_cols, bmk=bmk)
+        results = run_single_period_analysis(period, ret_cols=ret_cols, bmk=bmk, choice=choice)
         all_corr_results.extend(results)
     
     if all_corr_results:
         corr_df = pd.DataFrame(all_corr_results)
         
-        summary_dir = f"{srcdir}/综合分析"
+        summary_dir = f"{srcdir}/综合分析_{choice}"
         if not os.path.exists(summary_dir):
             os.makedirs(summary_dir)
         
@@ -399,7 +446,7 @@ def run_multi_period_analysis(start_year=2020, end_year=2026, end_quarter=1, ret
         return None
 
 
-def combine_bmk_corr_results(bmk_list, start_year=2020, end_year=2026, end_quarter=1):
+def combine_bmk_corr_results(bmk_list, start_year=2020, end_year=2026, end_quarter=1, choice="resid_style"):
     """
     综合多个bmk的相关系数汇总分析结果
     
@@ -408,6 +455,7 @@ def combine_bmk_corr_results(bmk_list, start_year=2020, end_year=2026, end_quart
         start_year: 开始年份
         end_year: 结束年份
         end_quarter: 结束季度
+        choice: 分析类型，"exp_ret_vol"为风格暴露vs收益/波动，"resid_style"为残差vs风格贡献
     
     返回:
         combined_path: 综合后的Excel文件路径
@@ -416,8 +464,9 @@ def combine_bmk_corr_results(bmk_list, start_year=2020, end_year=2026, end_quart
     print("综合多个bmk的相关系数汇总分析结果")
     print('='*60)
     print(f"待综合的bmk列表: {bmk_list}")
+    print(f"分析类型: {choice}")
     
-    summary_dir = f"{srcdir}/综合分析"
+    summary_dir = f"{srcdir}/综合分析_{choice}"
     all_sheet_data = defaultdict(dict)
     all_sheet_names = set()
     
@@ -441,7 +490,7 @@ def combine_bmk_corr_results(bmk_list, start_year=2020, end_year=2026, end_quart
         print("   未找到任何有效的数据文件")
         return None
     
-    combined_path = f"{summary_dir}/相关系数汇总分析_{start_year}-{end_year}Q{end_quarter}_综合版.xlsx"
+    combined_path = f"{summary_dir}/相关系数汇总分析_{start_year}-{end_year}Q{end_quarter}_综合版_{choice}.xlsx"
     with pd.ExcelWriter(combined_path) as writer:
         for sheet_name in sorted(all_sheet_names):
             bmk_dfs = all_sheet_data[sheet_name]
@@ -476,6 +525,6 @@ if __name__ == "__main__":
         print(f"\n{'='*60}")
         print(f"处理基准: {bmk}")
         print('='*60)
-        #run_multi_period_analysis(start_year=2020, end_year=2026, end_quarter=1, ret_cols=ret_cols, bmk=bmk)
+        run_multi_period_analysis(start_year=2020, end_year=2026, end_quarter=1, ret_cols=ret_cols, bmk=bmk)
     
     combine_bmk_corr_results(bmk_list, start_year=2020, end_year=2026, end_quarter=1)
