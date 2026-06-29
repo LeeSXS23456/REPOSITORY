@@ -9,9 +9,29 @@ import streamlit as st
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CACHE_FILE = os.path.join(BASE_DIR, "data_base", "fac_ret", "whole_mkt", "factor_returns_20_2603.pkl")
 
-
-plt.rcParams["font.sans-serif"] = ["SimHei"]
 plt.rcParams["axes.unicode_minus"] = False
+
+def _setup_chinese_font():
+    import matplotlib.font_manager as fm
+    candidates = ["Microsoft YaHei", "SimHei", "WenQuanYi Micro Hei", "Noto Sans SC", "Noto Sans CJK SC"]
+    for f in fm.fontManager.ttflist:
+        if f.name in candidates:
+            plt.rcParams["font.sans-serif"] = [f.name]
+            return
+    try:
+        import urllib.request
+        fp = "/tmp/NotoSansSC-Regular.otf"
+        if not os.path.exists(fp):
+            urllib.request.urlretrieve(
+                "https://github.com/googlefonts/noto-cjk/raw/main/Sans/OTF/SimplifiedChinese/NotoSansSC-Regular.otf",
+                fp
+            )
+        fm.fontManager.addfont(fp)
+        plt.rcParams["font.sans-serif"] = [fm.FontProperties(fname=fp).get_name()]
+    except:
+        pass
+
+_setup_chinese_font()
 
 RQ_OK = False
 try:
@@ -118,7 +138,7 @@ def get_data(sd, ed):
         _d.append(f"缓存写入失败: {e}")
     return df, _d
 
-
+mapping = {"风格因子": "style", "行业因子": "industry"}
 st.set_page_config(page_title="Barra 因子净值", layout="wide")
 st.markdown("""
 <style>
@@ -161,21 +181,85 @@ if mode == "大类综合":
     if not target:
         st.stop()
     nav = (df_view[target] + 1).cumprod()
+    nav = nav / nav.iloc[0]
     order = nav.iloc[-1].sort_values(ascending=False).index
+
+    today_idx = nav.index
+    today = today_idx[-1]
+
+    # ⭐ week_start: 本周之前一周的最后一个交易日
+    monday_nat = today - pd.Timedelta(days=today.weekday())
+    prev_cand = today_idx[today_idx < monday_nat]
+    week_start = prev_cand[-1] if len(prev_cand) > 0 else today
+
+    # ⭐ month_start: 当月第一天的前一个交易日
+    first_of_month = pd.Timestamp(year=today.year, month=today.month, day=1)
+    prev_cand = today_idx[today_idx < first_of_month]
+    month_start = prev_cand[-1] if len(prev_cand) > 0 else today
+    curr_month = pd.Timestamp(year=today.year, month=today.month, day=1)
+    curr_cand = today_idx[today_idx >= curr_month]
+    curr_month_start = curr_cand[0] if len(curr_cand) > 0 else today
+
+    latest_nav = nav.iloc[-1]
+    if len(nav) >= 2:
+        ret_1d = (nav.iloc[-1] / nav.iloc[-2] - 1)
+    else:
+        ret_1d = pd.Series(np.nan, index=nav.columns)
+
+    nav_week = nav.loc[week_start:today]
+    ret_1w = nav_week.iloc[-1] / nav_week.iloc[0] - 1
+
+    nav_month = nav.loc[month_start:today]
+    ret_1m = nav_month.iloc[-1] / nav_month.iloc[0] - 1
+    cum = nav_month / nav_month.iloc[0]
+    dd = (cum - cum.cummax()) / cum.cummax()
+    dd_max = dd.min()
+    month_ret = df_view.loc[curr_month_start:today, target]
+    vol = month_ret.std()
+
+    #核算
+    print(week_start, month_start, curr_month_start,today)
+
+
+    tbl = pd.DataFrame({
+        "最新净值": latest_nav,
+        "1日收益": ret_1d * 100,
+        "本周累计": ret_1w * 100,
+        "本月累计": ret_1m * 100,
+        "本月最大回撤": dd_max * 100,
+        "本月波动率": vol * 100,
+    }).round(4)
+    tbl = tbl.reindex(order)
+
+    #基础净值曲线展示
     fig, ax = plt.subplots(figsize=(12, 6))
     for c in order:
         ax.plot(nav.index, nav[c], label=str(c), lw=1.2)
     ax.axhline(1, color="gray", ls="--", lw=0.6, alpha=0.6)
-    ax.set_title(f"{cat} 区间净值")
-
+    ax.set_title(f"{mapping[cat]} nav")
     ax.legend(loc="upper left", bbox_to_anchor=(-0.15, 1), fontsize=7.5, ncol=1)
-    # 用tight_layout自动适配图例，避免手动设置left
     plt.tight_layout(rect=[0.15, 0, 1, 1])
-
     ax.grid(alpha=0.3)
     fig.autofmt_xdate()
     st.pyplot(fig)
     plt.close(fig)
+
+    #具体数据表格展示
+    bar_cols = ["1日收益", "本周累计", "本月累计"]
+    styled = tbl.style.format({
+        "最新净值": "{:.4f}",
+        **{c: "{:.2f}%" for c in bar_cols},
+        "本月最大回撤": "{:.2f}%",
+        "本月波动率": "{:.2f}%",
+    }, na_rep="-")
+    for c in bar_cols:
+        styled = styled.bar(subset=[c], align="zero",
+                            color=["#d65f5f", "#5fba7d"], vmin=None, vmax=None)
+    html = styled.set_table_styles([
+        {"selector": "td, th", "props": [("padding", "5px 10px"), ("text-align", "right"), ("white-space", "nowrap")]},
+        {"selector": "th", "props": [("text-align", "left"), ("font-weight", "bold")]},
+    ]).to_html()
+    st.markdown(f"""<div style="overflow-x:auto; width:100%;">{html}</div>""", unsafe_allow_html=True)
 
 else:
     sub_cat = st.radio("类型", ["风格因子", "行业因子"], horizontal=True)
@@ -183,6 +267,7 @@ else:
     factor = st.selectbox("因子", pool) if pool else st.stop()
     ret = df_view[factor].dropna()
     nav = (ret + 1).cumprod()
+    nav = nav / nav.iloc[0] #净值归1
     ref = df_full[(df_full.index >= pd.Timestamp("2020-01-02")) & (df_full.index <= ed)][factor].dropna()
     ref_vals = ref.values
     pct = ret.apply(lambda x: float((ref_vals < x).sum()) / len(ref_vals) * 100)
@@ -210,6 +295,82 @@ else:
     fig.autofmt_xdate()
     st.pyplot(fig)
     plt.close(fig)
+
+    # 单因子指标表：5个最近交易日 + 近20/60日区间
+    row_labels = []
+    ret_list = []
+    pct_list = []
+    z_list = []
+    hist_full = ref.values    # 2020-01-02 起的完整日收益
+    hist_mean = hist_full.mean()
+    hist_std = hist_full.std()
+
+    # 最近第1~5个交易日（单日）
+    for k in range(1, 6):
+        if len(ret) < k:
+            break
+        idx = ret.index[-k]
+        r_val = ret.iloc[-k]
+        p_val = float((hist_full < r_val).sum()) / len(hist_full) * 100
+        z_val = (r_val - hist_mean) / hist_std if hist_std > 0 else np.nan
+        row_labels.append(f"最近第{k}日 ({idx.strftime('%Y-%m-%d')})")
+        ret_list.append(r_val * 100)
+        pct_list.append(p_val)
+        z_list.append(z_val)
+
+    # 近20 / 近60日区间（累计收益）
+    for window in [20, 60]:
+        if len(nav) < window + 1:
+            row_labels.append(f"近{window}日（数据不足）")
+            ret_list.append(np.nan)
+            pct_list.append(np.nan)
+            z_list.append(np.nan)
+            continue
+        cur_ret = nav.iloc[-1] / nav.iloc[-(window + 1)] - 1
+
+        # 以 ref 对应的净值序列做同窗口滚动累计收益，作为历史参照分布
+        ref_nav = (ref + 1).cumprod()
+        if len(ref_nav) > window:
+            ref_idx = ref_nav.index
+            rolling_rets = []
+            for i in range(window, len(ref_nav)):
+                if ref_idx[i] <= ret.index[-1]:
+                    rolling_rets.append(ref_nav.iloc[i] / ref_nav.iloc[i - window] - 1)
+            if len(rolling_rets) > 0:
+                rarr = np.array(rolling_rets)
+                cur_pct = float((rarr < cur_ret).sum()) / len(rarr) * 100
+                cur_z = (cur_ret - rarr.mean()) / rarr.std() if rarr.std() > 0 else np.nan
+            else:
+                cur_pct = np.nan
+                cur_z = np.nan
+        else:
+            cur_pct = np.nan
+            cur_z = np.nan
+
+        row_labels.append(f"近{window}日")
+        ret_list.append(cur_ret * 100)
+        pct_list.append(cur_pct)
+        z_list.append(cur_z)
+
+    tbl_single = pd.DataFrame({
+        "收益率(%)": ret_list,
+        "历史分位数(%)": pct_list,
+        "z值": z_list,
+    }, index=row_labels).round(3)
+
+    bar_s_cols = ["收益率(%)"]
+    styled_single = tbl_single.style.format({
+        "收益率(%)": "{:.3f}%",
+        "历史分位数(%)": "{:.2f}",
+        "z值": "{:.3f}",
+    }, na_rep="-")
+    #styled_single = styled_single.bar(subset=bar_s_cols, align="zero",
+    #                                  color=["#d65f5f", "#5fba7d"])
+    html_s = styled_single.set_table_styles([
+        {"selector": "td, th", "props": [("padding", "5px 10px"), ("text-align", "right"), ("white-space", "nowrap")]},
+        {"selector": "th", "props": [("text-align", "left"), ("font-weight", "bold")]},
+    ]).to_html()
+    st.markdown(f"""<div style="overflow-x:auto; width:100%;">{html_s}</div>""", unsafe_allow_html=True)
 
 with st.expander("📋 数据加载日志"):
     for line in debug_log:
