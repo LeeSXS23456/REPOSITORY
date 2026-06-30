@@ -5,9 +5,12 @@ import matplotlib as mpl
 import numpy as np
 import pandas as pd
 import streamlit as st
+from helpfunc_basis import add_basis_data
+import rqdatac
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CACHE_FILE = os.path.join(BASE_DIR, "data_base", "fac_ret", "whole_mkt", "factor_returns_20_2603.pkl")
+BASIS_DIR = os.path.join(BASE_DIR, "data_base", "basis","index_future_basis_data.pkl")
 
 plt.rcParams["axes.unicode_minus"] = False
 
@@ -150,7 +153,7 @@ st.title("Barra 因子净值可视化")
 st.sidebar.header("配置")
 st.session_state.sd = st.sidebar.date_input("起始", pd.Timestamp("2020-01-02"), max_value=pd.Timestamp("2036-03-25"))
 st.session_state.ed = st.sidebar.date_input("结束", pd.Timestamp("2026-03-25"), max_value=pd.Timestamp("2036-03-25"))
-mode = st.sidebar.radio("模式", ["大类综合", "单因子详细"])
+mode = st.sidebar.radio("模式", ["大类综合", "单因子详细", "基差成本监控"])
 
 sd = pd.Timestamp(st.session_state.sd)
 ed = pd.Timestamp(st.session_state.ed)
@@ -159,6 +162,40 @@ with st.spinner("加载数据中..."):
 if df_full.empty:
     st.error("无可用数据")
     st.stop()
+
+# ---------- 基差数据：读取 + 增量更新 ----------
+def _load_basis():
+    if os.path.exists(BASIS_DIR):
+        try:
+            bd = pd.read_pickle(BASIS_DIR)
+            if isinstance(bd, pd.DataFrame) and not bd.empty:
+                for _cn in ["date", "listed_date", "maturity_date"]:
+                    if _cn in bd.columns:
+                        bd[_cn] = pd.to_datetime(bd[_cn])
+                return bd
+        except:
+            pass
+    return pd.DataFrame()
+
+df_basis = _load_basis()
+if mode == "基差成本监控":
+    if not df_basis.empty:
+        b_max = df_basis["date"].max()
+    else:
+        b_max = sd - pd.Timedelta(days=1)
+    if ed > b_max:
+        try:
+            _new = add_basis_data(b_max, ed)
+            if isinstance(_new, pd.DataFrame) and not _new.empty:
+                for _cn in ["date", "listed_date", "maturity_date"]:
+                    if _cn in _new.columns:
+                        _new[_cn] = pd.to_datetime(_new[_cn])
+                df_basis = pd.concat([df_basis, _new], axis=0)
+                df_basis = df_basis.drop_duplicates(keep="last").sort_values(["order_book_id", "date"]).reset_index(drop=True)
+                os.makedirs(os.path.dirname(BASIS_DIR), exist_ok=True)
+                pd.to_pickle(df_basis, BASIS_DIR)
+        except Exception as _be:
+            st.warning(f"基差数据更新失败: {_be}")
 
 df_view = df_full[(df_full.index >= sd) & (df_full.index <= ed)]
 if df_view.empty:
@@ -260,6 +297,119 @@ if mode == "大类综合":
         {"selector": "th", "props": [("text-align", "left"), ("font-weight", "bold")]},
     ]).to_html()
     st.markdown(f"""<div style="overflow-x:auto; width:100%;">{html}</div>""", unsafe_allow_html=True)
+
+elif mode == "基差成本监控":
+    if df_basis.empty:
+        st.error("基差数据为空，请检查数据文件")
+        st.stop()
+    # 每个 order_book_id 的存续期是否与 [sd, ed] 有重叠
+    def _has_overlap(sub):
+        ld = sub["listed_date"].iloc[0]
+        md = sub["maturity_date"].iloc[0]
+        return not (md < sd or ld > ed)
+
+    valid_ids = []
+    for _id, _sub in df_basis.groupby("order_book_id", sort=False):
+        if _has_overlap(_sub):
+            valid_ids.append(str(_id))
+
+    if not valid_ids:
+        st.error("当前日期范围内没有可用的合约")
+        st.stop()
+
+    sel_id = st.selectbox("选择合约 (order_book_id)", sorted(valid_ids))
+    sub = df_basis[df_basis.index.get_level_values("order_book_id").astype(str) == sel_id].copy()
+    sub = sub.sort_values("date").reset_index(drop=True)
+
+    # 取该合约在 [sd, ed] 区间内的日期用于绘图
+    plot_sub = sub[(sub["date"] >= sd) & (sub["date"] <= ed)].reset_index(drop=True)
+    if plot_sub.empty:
+        st.warning("所选合约在当前日期区间内没有数据")
+        st.stop()
+
+    # 实时基差：一行表（不含列名）  order_book_id | index | datetime | index_px | future_px | basis | basis_rate | basis_annual_rate
+    try:
+        #from rqdatac.futures import get_current_basis as _gcb
+        _cb = rqdatac.futures.get_current_basis(sel_id, market='cn')
+        if _cb is not None and not _cb.empty:
+            _row = _cb.iloc[0]
+            _fields = ["index", "datetime", "index_px", "future_px",
+                       "basis", "basis_rate", "basis_annual_rate"]
+            _obid = str(_row.name) if _row.name is not None else sel_id
+            _html = f'<table style="width:100%;border-collapse:collapse;font-size:0.75rem;white-space:nowrap;"><tr>'
+            _html += f'<td style="padding:4px 8px;text-align:left;font-weight:bold;border-bottom:1px solid #ccc;">{_obid}</td>'
+            for _k in _fields:
+                if _k in _row:
+                    _v = _row[_k]
+                    if isinstance(_v, (pd.Timestamp, np.datetime64)):
+                        _s = str(pd.Timestamp(_v)).split(".")[0]
+                    else:
+                        try:
+                            _s = f"{float(_v):.3f}"
+                        except Exception:
+                            _s = str(_v)
+                else:
+                    _s = "—"
+                _html += f'<td style="padding:4px 8px;text-align:right;border-bottom:1px solid #ccc;"><span style="color:#888;font-size:0.65rem;">{_k}:</span> {_s}</td>'
+            _html += "</tr></table>"
+            st.markdown(_html, unsafe_allow_html=True)
+    except Exception as e:
+        print(e)
+
+    y1 = plot_sub["abs_ratio"].values * 100
+    y2 = plot_sub["ana_cost"].values * 100
+    fig, ax = plt.subplots(figsize=(14, 6))
+    ax.plot(plot_sub["date"].values, y1, color="#1f77b4", lw=2, label="abs_ratio (%)")
+    ax2 = ax.twinx()
+    ax2.plot(plot_sub["date"].values, y2, color="#ff7f0e", lw=2, label="ana_cost (%)")
+    ax.set_title(f"基差成本监控 — {sel_id}")
+    ax.set_xlabel("date")
+    ax.set_ylabel("abs_ratio (%)", color="#1f77b4")
+    ax2.set_ylabel("ana_cost (%)", color="#ff7f0e")
+    ax.tick_params(axis="y", labelcolor="#1f77b4")
+    ax2.tick_params(axis="y", labelcolor="#ff7f0e")
+
+    lines1, labels1 = ax.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax.legend(lines1 + lines2, labels1 + labels2, fontsize=9, loc="best")
+    ax.grid(alpha=0.3)
+    fig.autofmt_xdate()
+    st.pyplot(fig)
+    plt.close(fig)
+
+    # 转置展示：一个指标一行，一个日期一列；列多时按段S型纵向拼接
+    tbl_b = plot_sub[["date", "abs_ratio", "ana_cost"]].copy()
+    tbl_b["date"] = tbl_b["date"].dt.strftime("%Y-%m-%d")
+    tbl_b["abs_ratio(%)"] = tbl_b["abs_ratio"] * 100
+    tbl_b["ana_cost(%)"] = tbl_b["ana_cost"] * 100
+    tbl_b = tbl_b[["date", "abs_ratio(%)", "ana_cost(%)"]].round(3).tail(30)
+    tbl_b = tbl_b.sort_values("date").reset_index(drop=True)
+    _wide = tbl_b.set_index("date").T
+    _wide.index.name = None
+    _total_cols = list(_wide.columns)
+
+    _cols_per_seg = 20
+    _seg_count = (len(_total_cols) + _cols_per_seg - 1) // _cols_per_seg
+
+    for _si in range(_seg_count):
+        _seg_cols = _total_cols[_si * _cols_per_seg:(_si + 1) * _cols_per_seg]
+        _seg = _wide[_seg_cols]
+
+        # 偶数段反转日期列顺序 → 让上一段最右边的日期紧挨着下一段最左边的日期，形成Z型
+        if _si % 2 == 1:
+            _seg = _seg[_seg.columns[::-1]]
+
+        _html = (_seg.style.format("{:.3f}").set_table_styles([
+            {"selector": "td, th", "props": [("padding", "3px 6px"),
+                                            ("text-align", "right"),
+                                            ("font-size", "0.8rem"),
+                                            ("white-space", "nowrap")]},
+            {"selector": "th.row_heading", "props": [("text-align", "left"),
+                                                    ("font-weight", "bold")]},
+        ]).to_html())
+        st.markdown(
+            f"""<div style="overflow-x:auto; width:100%; margin-bottom:8px;">{_html}</div>""",
+            unsafe_allow_html=True)
 
 else:
     sub_cat = st.radio("类型", ["风格因子", "行业因子"], horizontal=True)
