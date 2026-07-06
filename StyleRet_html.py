@@ -5,8 +5,8 @@ import matplotlib as mpl
 import numpy as np
 import pandas as pd
 import streamlit as st
-from helpfunc_basis import add_basis_data
-import rqdatac
+from helpfunc_basis import *
+from rqdatac import *
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CACHE_FILE = os.path.join(BASE_DIR, "data_base", "fac_ret", "whole_mkt", "factor_returns_20_2603.pkl")
@@ -149,11 +149,11 @@ div[data-testid="metric-container"] label { font-size: 0.7rem !important; white-
 div[data-testid="metric-container"] div { font-size: 0.8rem !important; }
 </style>
 """, unsafe_allow_html=True)
-st.title("Barra 因子净值可视化")
+st.title("行情面板")
 st.sidebar.header("配置")
 st.session_state.sd = st.sidebar.date_input("起始", pd.Timestamp("2020-01-02"), max_value=pd.Timestamp("2036-03-25"))
 st.session_state.ed = st.sidebar.date_input("结束", pd.Timestamp("2026-03-25"), max_value=pd.Timestamp("2036-03-25"))
-mode = st.sidebar.radio("模式", ["大类综合", "单因子详细", "基差成本监控"])
+mode = st.sidebar.radio("模式", ["Barra大类综合", "Barra单因子详细", "基差成本监控"])
 
 sd = pd.Timestamp(st.session_state.sd)
 ed = pd.Timestamp(st.session_state.ed)
@@ -190,10 +190,17 @@ if mode == "基差成本监控":
                 for _cn in ["date", "listed_date", "maturity_date"]:
                     if _cn in _new.columns:
                         _new[_cn] = pd.to_datetime(_new[_cn])
-                df_basis = pd.concat([df_basis, _new], axis=0)
-                df_basis = df_basis.drop_duplicates(keep="last").sort_values(["order_book_id", "date"]).reset_index(drop=True)
+                # 确保 _new 也把 order_book_id 当列处理
+                if _new.index.name == "order_book_id":
+                    _new = _new.reset_index()
+                df_basis = pd.concat([df_basis.reset_index(), _new], axis=0)
+                df_basis = (df_basis.drop_duplicates(keep="last")
+                                    .sort_values(["order_book_id", "date"])
+                                    .set_index("order_book_id"))
+                print(df_basis)
                 os.makedirs(os.path.dirname(BASIS_DIR), exist_ok=True)
                 pd.to_pickle(df_basis, BASIS_DIR)
+                print(f"基差数据更新完成: {df_basis['date'].max().date()}")
         except Exception as _be:
             st.warning(f"基差数据更新失败: {_be}")
 
@@ -212,7 +219,7 @@ c2.metric("结束时间", f"{df_view.index.max().date()}")
 c3.metric("交易日", len(df_view))
 c4.metric("因子", f"风格{len(style_cols)} / 行业{len(industry_cols)}")
 
-if mode == "大类综合":
+if mode == "Barra大类综合":
     cat = st.radio("类别", ["风格因子", "行业因子"], horizontal=True)
     target = style_cols if cat == "风格因子" else industry_cols
     if not target:
@@ -302,6 +309,87 @@ elif mode == "基差成本监控":
     if df_basis.empty:
         st.error("基差数据为空，请检查数据文件")
         st.stop()
+
+    # ====== cal_fhds：分红点数调整（@st.cache_data 缓存，切换列不重算）======
+    _prev_date = pd.Timestamp(ed)
+
+    @st.cache_data(ttl=3600, show_spinner="正在计算分红调整…")
+    def _compute_fhds(_dt_str):
+        """缓存：对指定日期计算 cal_fhds + adj 指标，并入前日对比"""
+        _dt = pd.Timestamp(_dt_str)
+        _row = df_basis[df_basis["date"] == _dt].copy()
+        if _row.empty:
+            return pd.DataFrame()
+        _df = cal_fhds(_dt, _row)
+        if _df.empty:
+            return _df
+        _df["adj_basis"] = _df["basis"] + _df["dividend_point"]
+        _df["adj_abs_ratio"] = _df["adj_basis"] / _df["close_index"]
+        _df["adj_ana_cost"] = _df["adj_abs_ratio"] / _df["residual_day"] * 365
+
+        # 前一个交易日
+        _prev_dates = sorted(df_basis[df_basis["date"] < _dt]["date"].unique())
+        if _prev_dates:
+            _row_p = df_basis[df_basis["date"] == _prev_dates[-1]].copy()
+            if not _row_p.empty:
+                _df_p = cal_fhds(_prev_dates[-1], _row_p)
+                if not _df_p.empty:
+                    _df_p["adj_basis"] = _df_p["basis"] + _df_p["dividend_point"]
+                    _df_p["adj_abs_ratio"] = _df_p["adj_basis"] / _df_p["close_index"]
+                    _df_p["adj_ana_cost"] = _df_p["adj_abs_ratio"] / _df_p["residual_day"] * 365
+                    _df["prev_adj_ana_cost"] = _df_p["adj_ana_cost"]
+                    _df["prev_adj_basis"] = _df_p["adj_basis"]
+                    _df["adj_basis_chg"] = _df["adj_basis"] - _df_p["adj_basis"]
+                    _df["adj_basis_chg_ratio"] = _df["adj_basis_chg"] / _df["close_index"]
+        return _df
+
+    _fhds_df = _compute_fhds(str(_prev_date))
+
+    if not _fhds_df.empty:
+        st.markdown(f"**分红调整后基差（日期: {_prev_date.date()}）**")
+
+        # 列分组：日期列默认隐藏，其余默认显示；st.dataframe 自带横向滚动 + index 固定
+        _groups = {
+            "日期列": ["date", "listed_date", "maturity_date", "residual_day"],
+            "原始基差": ["settlement", "close_index", "basis", "abs_ratio", "ana_cost"],
+            "调整后指标": ["dividend_point", "adj_basis", "adj_abs_ratio", "adj_ana_cost"],
+            "前日对比": ["prev_adj_ana_cost", "prev_adj_basis", "adj_basis_chg", "adj_basis_chg_ratio"],
+        }
+        _c1, _c2, _c3, _c4 = st.columns(4)
+        _toggles = {}
+        with _c1:
+            _toggles["日期列"] = st.checkbox("日期列", value=False)
+        with _c2:
+            _toggles["原始基差"] = st.checkbox("原始基差", value=False)
+        with _c3:
+            _toggles["调整后指标"] = st.checkbox("调整后指标", value=True)
+        with _c4:
+            _toggles["前日对比"] = st.checkbox("前日对比", value=True)
+
+        _show_cols = []
+        for _gname, _gcols in _groups.items():
+            if _toggles[_gname]:
+                _show_cols.extend([c for c in _gcols if c in _fhds_df.columns])
+
+        if _show_cols:
+            _display = _fhds_df[_show_cols].copy()
+            _pct_cols = {"abs_ratio", "ana_cost", "adj_abs_ratio", "adj_ana_cost", "adj_basis_chg_ratio"}
+            _fmt = {}
+            for _c in _display.columns:
+                if _c in _pct_cols:
+                    _fmt[_c] = "{:.4f}"
+                elif pd.api.types.is_float_dtype(_display[_c]):
+                    _fmt[_c] = "{:.2f}"
+                elif pd.api.types.is_datetime64_any_dtype(_display[_c]):
+                    _fmt[_c] = lambda x: x.strftime("%Y-%m-%d") if pd.notna(x) else "-"
+            st.dataframe(
+                _display.style.format(_fmt, na_rep="-"),
+                use_container_width=True,
+                height=400,
+            )
+        else:
+            st.info("请至少勾选一组列")
+
     # 每个 order_book_id 的存续期是否与 [sd, ed] 有重叠
     def _has_overlap(sub):
         ld = sub["listed_date"].iloc[0]
@@ -309,7 +397,7 @@ elif mode == "基差成本监控":
         return not (md < sd or ld > ed)
 
     valid_ids = []
-    for _id, _sub in df_basis.groupby("order_book_id", sort=False):
+    for _id, _sub in df_basis.groupby(level="order_book_id", sort=False):
         if _has_overlap(_sub):
             valid_ids.append(str(_id))
 
@@ -327,34 +415,34 @@ elif mode == "基差成本监控":
         st.warning("所选合约在当前日期区间内没有数据")
         st.stop()
 
-    # 实时基差：一行表（不含列名）  order_book_id | index | datetime | index_px | future_px | basis | basis_rate | basis_annual_rate
-    try:
-        #from rqdatac.futures import get_current_basis as _gcb
-        _cb = rqdatac.futures.get_current_basis(sel_id, market='cn')
-        if _cb is not None and not _cb.empty:
-            _row = _cb.iloc[0]
-            _fields = ["index", "datetime", "index_px", "future_px",
-                       "basis", "basis_rate", "basis_annual_rate"]
-            _obid = str(_row.name) if _row.name is not None else sel_id
-            _html = f'<table style="width:100%;border-collapse:collapse;font-size:0.75rem;white-space:nowrap;"><tr>'
-            _html += f'<td style="padding:4px 8px;text-align:left;font-weight:bold;border-bottom:1px solid #ccc;">{_obid}</td>'
-            for _k in _fields:
-                if _k in _row:
-                    _v = _row[_k]
-                    if isinstance(_v, (pd.Timestamp, np.datetime64)):
-                        _s = str(pd.Timestamp(_v)).split(".")[0]
-                    else:
-                        try:
-                            _s = f"{float(_v):.3f}"
-                        except Exception:
-                            _s = str(_v)
-                else:
-                    _s = "—"
-                _html += f'<td style="padding:4px 8px;text-align:right;border-bottom:1px solid #ccc;"><span style="color:#888;font-size:0.65rem;">{_k}:</span> {_s}</td>'
-            _html += "</tr></table>"
-            st.markdown(_html, unsafe_allow_html=True)
-    except Exception as e:
-        print(e)
+    # # 实时基差：一行表（不含列名）  order_book_id | index | datetime | index_px | future_px | basis | basis_rate | basis_annual_rate
+    # try:
+    #     #from rqdatac.futures import get_current_basis as _gcb
+    #     _cb = rqdatac.futures.get_current_basis(sel_id, market='cn')
+    #     if _cb is not None and not _cb.empty:
+    #         _row = _cb.iloc[0]
+    #         _fields = ["index", "datetime", "index_px", "future_px",
+    #                    "basis", "basis_rate", "basis_annual_rate"]
+    #         _obid = str(_row.name) if _row.name is not None else sel_id
+    #         _html = f'<table style="width:100%;border-collapse:collapse;font-size:0.75rem;white-space:nowrap;"><tr>'
+    #         _html += f'<td style="padding:4px 8px;text-align:left;font-weight:bold;border-bottom:1px solid #ccc;">{_obid}</td>'
+    #         for _k in _fields:
+    #             if _k in _row:
+    #                 _v = _row[_k]
+    #                 if isinstance(_v, (pd.Timestamp, np.datetime64)):
+    #                     _s = str(pd.Timestamp(_v)).split(".")[0]
+    #                 else:
+    #                     try:
+    #                         _s = f"{float(_v):.3f}"
+    #                     except Exception:
+    #                         _s = str(_v)
+    #             else:
+    #                 _s = "—"
+    #             _html += f'<td style="padding:4px 8px;text-align:right;border-bottom:1px solid #ccc;"><span style="color:#888;font-size:0.65rem;">{_k}:</span> {_s}</td>'
+    #         _html += "</tr></table>"
+    #         st.markdown(_html, unsafe_allow_html=True)
+    # except Exception as e:
+    #     print(e)
 
     y1 = plot_sub["abs_ratio"].values * 100
     y2 = plot_sub["ana_cost"].values * 100
@@ -394,10 +482,6 @@ elif mode == "基差成本监控":
     for _si in range(_seg_count):
         _seg_cols = _total_cols[_si * _cols_per_seg:(_si + 1) * _cols_per_seg]
         _seg = _wide[_seg_cols]
-
-        # 偶数段反转日期列顺序 → 让上一段最右边的日期紧挨着下一段最左边的日期，形成Z型
-        if _si % 2 == 1:
-            _seg = _seg[_seg.columns[::-1]]
 
         _html = (_seg.style.format("{:.3f}").set_table_styles([
             {"selector": "td, th", "props": [("padding", "3px 6px"),

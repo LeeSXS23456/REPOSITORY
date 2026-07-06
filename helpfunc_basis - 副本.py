@@ -226,38 +226,40 @@ def cal_fhds(dt, new):
         daily_df = new.merge(_r, on="order_book_id", how="right")
         return daily_df
 
-    # ===== 提速3: 收集所有涉及的股票，预过滤 & 预建 {stk: sub_df} =====
+    # ===== 提速3: 收集所有涉及的股票，预过滤 _dps / _eps / _time（消除循环里全表扫）=====
     _all_stks = set()
     for _sw in _comp_cache.values():
         _all_stks.update(_sw.keys())
     _all_stks = list(_all_stks)
 
     # 一次 isin 过滤，剩下只有相关股票的数据，之后 .xs(stk) 就是小表的快速查找
-    _dps_f = _dps[_dps.index.get_level_values(0).isin(_all_stks)]
-    _eps_f = _eps[_eps.index.get_level_values(0).isin(_all_stks)]
-    _time_f = _time[_time.index.get_level_values(0).isin(_all_stks)]
+    try:
+        _dps_f = _dps.loc[_dps.index.get_level_values(0).isin(_all_stks)]
+    except Exception:
+        _dps_f = _dps
+    try:
+        _eps_f = _eps.loc[_eps.index.get_level_values(0).isin(_all_stks)]
+    except Exception:
+        _eps_f = _eps
+    try:
+        _time_f = _time.loc[_time.index.get_level_values(0).isin(_all_stks)]
+    except Exception:
+        _time_f = _time
 
-    # 预构建 {stk: sub_df}，避免循环内反复 .xs()；不用 .unique()，Index.__contains__ 已是 O(1)
-    _dps_dict = {s: _dps_f.xs(s, level=0, drop_level=True) for s in _all_stks if s in _dps_f.index.get_level_values(0)}
-    _eps_dict = {s: _eps_f.xs(s, level=0, drop_level=True) for s in _all_stks if s in _eps_f.index.get_level_values(0)}
-    _time_dict = {s: _time_f.xs(s, level=0, drop_level=True) for s in _all_stks if s in _time_f.index.get_level_values(0)}
+    # 预构建 {stk: sub_df}，避免循环内反复 .xs()
+    _dps_dict = {s: _dps_f.xs(s, level=0, drop_level=True) for s in _all_stks if s in _dps_f.index.get_level_values(0).unique()}
+    _eps_dict = {s: _eps_f.xs(s, level=0, drop_level=True) for s in _all_stks if s in _eps_f.index.get_level_values(0).unique()}
 
     # ===== 提速4: 预计算每只股票 × 每个 quarter 的 (dividend, ex_date) =====
-    # 关键改动：_time_sub / _dps_sub / _eps_sub 提到 _stk 外循环；
-    # 用 loc[[q]] 永远返回 DataFrame，消除 Series→DataFrame 转换；
-    # 所有数据访问改为单索引子表 lookup，不再对 _dps_f/_time_f 做 MultiIndex .loc
     _fhds_cache = {}  # (stk, q) -> (dividend, ex_date)
     for _stk in _all_stks:
-        _time_sub = _time_dict.get(_stk)
-        if _time_sub is None:
-            continue
-        _dps_sub = _dps_dict.get(_stk)
-        _eps_sub = _eps_dict.get(_stk)
-
         for q in quarter_list:
-            if q not in _time_sub.index:
+            try:
+                rows = _time_f.loc[(_stk, q)]
+            except (KeyError, TypeError):
                 continue
-            rows = _time_sub.loc[[q]]  # 始终 DataFrame
+            if isinstance(rows, pd.Series):
+                rows = rows.to_frame().T
 
             events = rows["event_procedure"].tolist()
             if "方案实施" in events:
@@ -272,24 +274,26 @@ def cal_fhds(dt, new):
             try:
                 info_date = rows[rows["event_procedure"] == _evt]["info_date"].iloc[0]
                 if not _pred:
-                    # 方案实施：从预建 _dps_dict 查（单索引 lookup，避免 MultiIndex .loc）
-                    if _dps_sub is None or info_date not in _dps_sub.index:
-                        continue
-                    row = _dps_sub.loc[info_date]
+                    # 方案实施：从 _dps 查（stk + 声明公告日）
+                    row = _dps_f.loc[(_stk, info_date)]
                     dividend = float(row["dividend_cash_before_tax"]) / 10 * 0.9
                     ex_date = pd.Timestamp(row["ex_dividend_date"])
                 else:
                     # 决案/预案：用去年同季 (event_date → ex_date) 的间隔预测
                     pre_q = str(int(q[:4]) - 1) + q[4:]
-                    if pre_q not in _time_sub.index:
+                    try:
+                        pre_rows = _time_f.loc[(_stk, pre_q)]
+                    except (KeyError, TypeError):
                         continue
-                    pre_rows = _time_sub.loc[[pre_q]]
+                    if isinstance(pre_rows, pd.Series):
+                        pre_rows = pre_rows.to_frame().T
                     _pre_event_mask = pre_rows["event_procedure"] == _evt
                     if not _pre_event_mask.any():
                         continue
                     _pre_info = pd.Timestamp(pre_rows.loc[_pre_event_mask, "info_date"].iloc[0])
 
                     # 去年同季度的 ex_date（从预构建 dict 拿）
+                    _dps_sub = _dps_dict.get(_stk)
                     if _dps_sub is None:
                         continue
                     _pre_q_mask = _dps_sub["quarter"] == pre_q
@@ -300,6 +304,7 @@ def cal_fhds(dt, new):
                     ex_date = pd.Timestamp(info_date) + (_pre_ex - _pre_info)
 
                     # 分红金额 = 当前 eps × 支付率（都用当前季度 q）
+                    _eps_sub = _eps_dict.get(_stk)
                     if _eps_sub is None or q not in _eps_sub.index:
                         continue
                     _cur_row = _eps_sub.loc[q]
