@@ -9,7 +9,7 @@ srcdir = os.path.join(BASE_DIR, "data_base", "basis","index_future_basics.pkl")
 
 epsdir = os.path.join(BASE_DIR, "data_base", "basis","866011.RI_eps_24_25Q.pkl")
 #df_eps = pd.read_pickle(epsdir)
-dpsdir = os.path.join(BASE_DIR, "data_base", "basis","866011.RI_dps_24_25H.pkl")
+dpsdir = os.path.join(BASE_DIR, "data_base", "basis","866011.RI_dps_22_25H.pkl")
 #df_dps = pd.read_pickle(dpsdir)
 timedir = os.path.join(BASE_DIR, "data_base", "basis","dividend_timeline.pkl")
 #df_time = pd.read_pickle(timedir)
@@ -318,8 +318,9 @@ def cal_fhds(dt, new, return_detail=False):
                             .groupby("quarter")["ex_dividend_date"].last().dropna()
                         )  # 每季度只保留最后一条（防止多次分红的情况），确保每年至多一个 ex_date
                         if len(_ex_same_q) > 0:
-                            _avg3 = pd.Timestamp.fromordinal(int(round(_ex_same_q.apply(lambda x: x.toordinal()).mean())))
-                            _avg3 = pd.Timestamp(year=_y, month=_avg3.month, day=_avg3.day)  # 月日取历史平均，年份用当前
+                            tmp = _ex_same_q.apply(lambda x: x.replace(year=2000))
+                            avg_doy = round(tmp.dt.dayofyear.mean())
+                            _avg3 = (pd.Timestamp("2000-01-01") + pd.Timedelta(days=avg_doy - 1)).replace(year=_y)
                             if _avg3 > _cutoff:
                                 ex_date = _avg3
                                 _type_label = "③历史平均"
