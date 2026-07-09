@@ -8,6 +8,11 @@ import streamlit as st
 from helpfunc_basis import *
 from rqdatac import *
 
+# from matplotlib import font_manager
+# font_path = "fonts/SimHei.ttf"
+# font_manager.fontManager.addfont(font_path)
+# prop = font_manager.FontProperties(fname=font_path)
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CACHE_FILE = os.path.join(BASE_DIR, "data_base", "fac_ret", "whole_mkt", "factor_returns_20_2603.pkl")
 BASIS_DIR = os.path.join(BASE_DIR, "data_base", "basis","index_future_basis_data.pkl")
@@ -152,7 +157,7 @@ div[data-testid="metric-container"] div { font-size: 0.8rem !important; }
 st.title("行情面板")
 st.sidebar.header("配置")
 st.session_state.sd = st.sidebar.date_input("起始", pd.Timestamp("2020-01-02"), max_value=pd.Timestamp("2036-03-25"))
-st.session_state.ed = st.sidebar.date_input("结束", pd.Timestamp("2026-03-25"), max_value=pd.Timestamp("2036-03-25"))
+st.session_state.ed = st.sidebar.date_input("结束", pd.Timestamp.now().normalize() - pd.Timedelta(days=1), max_value=pd.Timestamp("2036-03-25"))
 mode = st.sidebar.radio("模式", ["Barra大类综合", "Barra单因子详细", "基差成本监控"])
 
 sd = pd.Timestamp(st.session_state.sd)
@@ -298,7 +303,7 @@ if mode == "Barra大类综合":
     }, na_rep="-")
     for c in bar_cols:
         styled = styled.bar(subset=[c], align="zero",
-                            color=["#d65f5f", "#5fba7d"], vmin=None, vmax=None)
+                            color=["#5fba7d","#d65f5f"], vmin=None, vmax=None)
     html = styled.set_table_styles([
         {"selector": "td, th", "props": [("padding", "5px 10px"), ("text-align", "right"), ("white-space", "nowrap")]},
         {"selector": "th", "props": [("text-align", "left"), ("font-weight", "bold")]},
@@ -315,19 +320,19 @@ elif mode == "基差成本监控":
 
     @st.cache_data(ttl=3600, show_spinner="正在计算分红调整…")
     def _compute_fhds(_dt_str):
-        """缓存：对指定日期计算 cal_fhds + adj 指标，并入前日对比"""
+        """缓存：对指定日期计算 cal_fhds + adj 指标，并入前日对比；返回 (_df, _detail_df)"""
         _dt = pd.Timestamp(_dt_str)
         _row = df_basis[df_basis["date"] == _dt].copy()
         if _row.empty:
-            return pd.DataFrame()
-        _df = cal_fhds(_dt, _row)
+            return pd.DataFrame(), pd.DataFrame()
+        _df, _detail = cal_fhds(_dt, _row, return_detail=True)
         if _df.empty:
-            return _df
+            return _df, pd.DataFrame()
         _df["adj_basis"] = _df["basis"] + _df["dividend_point"]
         _df["adj_abs_ratio"] = _df["adj_basis"] / _df["close_index"]
         _df["adj_ana_cost"] = _df["adj_abs_ratio"] / _df["residual_day"] * 365
 
-        # 前一个交易日
+        # 前一个交易日（不需要 detail，传默认 False）
         _prev_dates = sorted(df_basis[df_basis["date"] < _dt]["date"].unique())
         if _prev_dates:
             _row_p = df_basis[df_basis["date"] == _prev_dates[-1]].copy()
@@ -341,9 +346,9 @@ elif mode == "基差成本监控":
                     _df["prev_adj_basis"] = _df_p["adj_basis"]
                     _df["adj_basis_chg"] = _df["adj_basis"] - _df_p["adj_basis"]
                     _df["adj_basis_chg_ratio"] = _df["adj_basis_chg"] / _df["close_index"]
-        return _df
+        return _df, _detail
 
-    _fhds_df = _compute_fhds(str(_prev_date))
+    _fhds_df, _fhds_detail = _compute_fhds(str(_prev_date))
 
     if not _fhds_df.empty:
         st.markdown(f"**分红调整后基差（日期: {_prev_date.date()}）**")
@@ -379,7 +384,7 @@ elif mode == "基差成本监控":
                 if _c in _pct_cols:
                     _fmt[_c] = "{:.4f}"
                 elif pd.api.types.is_float_dtype(_display[_c]):
-                    _fmt[_c] = "{:.2f}"
+                    _fmt[_c] = "{:.4f}"
                 elif pd.api.types.is_datetime64_any_dtype(_display[_c]):
                     _fmt[_c] = lambda x: x.strftime("%Y-%m-%d") if pd.notna(x) else "-"
             st.dataframe(
@@ -389,6 +394,28 @@ elif mode == "基差成本监控":
             )
         else:
             st.info("请至少勾选一组列")
+
+    # ====== 分红除权明细 ======
+    if not _fhds_detail.empty:
+        st.markdown("---")
+        st.markdown(f"**分红除权明细（{_prev_date.date()}）**")
+        _c1, _c2 = st.columns(2)
+        with _c1:
+            _pfx_opts = sorted(_fhds_detail["prefix"].unique())
+            _sel_pfx = st.multiselect("指数", _pfx_opts, default=_pfx_opts, key="detail_pfx")
+        with _c2:
+            _q_opts = sorted(_fhds_detail["quarter"].unique())
+            _sel_q = st.multiselect("季度", _q_opts, default=_q_opts, key="detail_q")
+        _dtbl = _fhds_detail[
+            _fhds_detail["prefix"].isin(_sel_pfx) & _fhds_detail["quarter"].isin(_sel_q)
+        ].sort_values(["prefix", "ex_date"]).reset_index(drop=True)
+        if not _dtbl.empty:
+            st.dataframe(_dtbl.style.format({"dividend": "{:.4f}"}), use_container_width=True, height=300)
+            _fig = plot_fhds_detail(_fhds_detail[_fhds_detail["quarter"].isin(_sel_q)], _sel_pfx)
+            if _fig is not None:
+                st.pyplot(_fig)
+                plt.close(_fig)
+
 
     # 每个 order_book_id 的存续期是否与 [sd, ed] 有重叠
     def _has_overlap(sub):

@@ -2,6 +2,7 @@ from rqdatac import *
 import pandas as pd
 import numpy as np
 import os
+import matplotlib.pyplot as plt
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 srcdir = os.path.join(BASE_DIR, "data_base", "basis","index_future_basics.pkl")
@@ -88,7 +89,7 @@ def active_contract(dt):
     """
     df_index_real_new = pd.read_pickle(srcdir)
     df_index_real_new = df_index_real_new[pd.to_datetime(df_index_real_new["maturity_date"]) > pd.to_datetime(dt)] 
-    print(len(df_index_real_new)) #今天交割的合约，期现价格已经收敛
+    print(f"{dt}当天存续的合约个数：{len(df_index_real_new)}") #今天交割的合约，期现价格已经收敛
     active_df = df_index_real_new[["order_book_id","maturity_date"]]
     return active_df
 
@@ -121,17 +122,20 @@ def get_index_d(dt):
 
 def update_dps(dt):
     _dps_old = pd.read_pickle(dpsdir) if os.path.exists(dpsdir) else pd.DataFrame()
-    _date_col = "ex_dividend_date"
+    #_date_col = "ex_dividend_date"
     # 确定增量起点
-    if not _dps_old.empty and _date_col is not None:
-        _start = pd.Timestamp(_dps_old[_date_col].max()) + pd.Timedelta(days=1)
+    if not _dps_old.empty: #and _date_col is not None:
+        _start = pd.Timestamp(_dps_old.index.get_level_values("declaration_announcement_date").max()) + pd.Timedelta(days=1)
     else:
         _start = pd.Timestamp("2024-06-30")
     _end = pd.Timestamp(dt)
     if _start <= _end:
         _dps_new = get_dividend(all_ids,start_date=_start.strftime("%Y%m%d"),end_date=_end.strftime("%Y%m%d"),expect_df=True, market='cn')
         if isinstance(_dps_new, pd.DataFrame) and not _dps_new.empty:
+            _n_old = len(_dps_old)
+            _dps_old = _dps_old.drop_duplicates()  # 先清历史重复，避免干扰计数
             _dps_old = pd.concat([_dps_old, _dps_new], axis=0).drop_duplicates().sort_index()
+            print(f"[update_dps] 拉取{len(_dps_new)}条, 净变化 {len(_dps_old) - _n_old:+d} 条, {_start.date()} ~ {_end.date()}")
     #存储
     _dps_old.to_pickle(dpsdir)
     return _dps_old
@@ -144,9 +148,11 @@ def update_eps(end_q):
     _new = get_pit_financials_ex(all_ids, ["basic_earnings_per_share"],start_quarter=_start_q, end_quarter=end_q,date=None, statements='latest', market='cn')
 
     if isinstance(_new, pd.DataFrame) and not _new.empty:
+        _n_old = len(_eps_old)
         _eps_old = pd.concat([_eps_old, _new], axis=0)#
         mask = _eps_old.index.duplicated(keep="first")
         _eps_old = _eps_old[~mask].sort_index()
+        print(f"[update_eps] +{len(_eps_old) - _n_old} 条, {_start_q} ~ {end_q}")
         _eps_old.to_pickle(epsdir)
 
     return _eps_old
@@ -159,17 +165,19 @@ def update_timeline(end_q):
     _new = get_dividend_amount(all_ids, start_quarter = _start_q, end_quarter = end_q, date = None, market = 'cn')
 
     if isinstance(_new, pd.DataFrame) and not _new.empty:
+        _n_old = len(_time_old)
         _time_old = pd.concat([_time_old, _new], axis=0).drop_duplicates().sort_index()
+        print(f"[update_timeline] +{len(_time_old) - _n_old} 条, {_start_q} ~ {end_q}")
         _time_old.to_pickle(timedir)
 
     return _time_old
 
-def cal_fhds(dt, new):
+def cal_fhds(dt, new, return_detail=False):
 
     # ===== 基础数据准备 =====
     active_df = active_contract(dt)
     if active_df.empty:
-        return pd.DataFrame()
+        return (pd.DataFrame(), pd.DataFrame()) if return_detail else pd.DataFrame()
 
     _y = pd.Timestamp(dt).year
     quarter_list = [f"{_y - 1}q2", f"{_y - 1}q4", f"{_y}q2"]
@@ -224,7 +232,7 @@ def cal_fhds(dt, new):
         _r = active_df[["order_book_id"]].copy()
         _r["dividend_point"] = 0.0
         daily_df = new.merge(_r, on="order_book_id", how="right")
-        return daily_df
+        return (daily_df, pd.DataFrame()) if return_detail else daily_df
 
     # ===== 提速3: 收集所有涉及的股票，预过滤 & 预建 {stk: sub_df} =====
     _all_stks = set()
@@ -276,8 +284,9 @@ def cal_fhds(dt, new):
                     if _dps_sub is None or info_date not in _dps_sub.index:
                         continue
                     row = _dps_sub.loc[info_date]
-                    dividend = float(row["dividend_cash_before_tax"]) / 10 * 0.9
+                    dividend = float(row["dividend_cash_before_tax"]) / 10
                     ex_date = pd.Timestamp(row["ex_dividend_date"])
+                    _type_label = "①方案实施"
                 else:
                     # 决案/预案：用去年同季 (event_date → ex_date) 的间隔预测
                     pre_q = str(int(q[:4]) - 1) + q[4:]
@@ -289,15 +298,34 @@ def cal_fhds(dt, new):
                         continue
                     _pre_info = pd.Timestamp(pre_rows.loc[_pre_event_mask, "info_date"].iloc[0])
 
-                    # 去年同季度的 ex_date（从预构建 dict 拿）
                     if _dps_sub is None:
                         continue
                     _pre_q_mask = _dps_sub["quarter"] == pre_q
                     if not _pre_q_mask.any():
                         continue
-                    _pre_ex = pd.Timestamp(_dps_sub.loc[_pre_q_mask, "ex_dividend_date"].iloc[0])
+                    _pre_ex = pd.Timestamp(_dps_sub.loc[_pre_q_mask, "ex_dividend_date"].iloc[-1])
 
                     ex_date = pd.Timestamp(info_date) + (_pre_ex - _pre_info)
+                    _type_label = f"②{_evt}"
+
+                    # 若预测日期不晚于明天，用历史同季度 ex_date 重估（均需 +1 年投射到当前年份）
+                    _cutoff = _dt + pd.Timedelta(days=1)
+                    if ex_date <= _cutoff:
+                        _y_q, _q_num = int(q[:4]), q[4:]
+                        _same_qs = [f"{_y_q - i}{_q_num}" for i in range(1, 4)]  # 前三年同季度
+                        _ex_same_q = pd.to_datetime(
+                            _dps_sub[_dps_sub["quarter"].isin(_same_qs)]
+                            .groupby("quarter")["ex_dividend_date"].last().dropna()
+                        )  # 每季度只保留最后一条（防止多次分红的情况），确保每年至多一个 ex_date
+                        if len(_ex_same_q) > 0:
+                            _avg3 = pd.Timestamp.fromordinal(int(round(_ex_same_q.apply(lambda x: x.toordinal()).mean())))
+                            _avg3 = pd.Timestamp(year=_y, month=_avg3.month, day=_avg3.day)  # 月日取历史平均，年份用当前
+                            if _avg3 > _cutoff:
+                                ex_date = _avg3
+                                _type_label = "③历史平均"
+                        if ex_date <= _cutoff:
+                            ex_date = _pre_ex + pd.DateOffset(years=1)
+                            _type_label = "④去年同期"
 
                     # 分红金额 = 当前 eps × 支付率（都用当前季度 q）
                     if _eps_sub is None or q not in _eps_sub.index:
@@ -309,7 +337,7 @@ def cal_fhds(dt, new):
                     payratio = fh / n_profit
                     dividend = current_eps * payratio
 
-                _fhds_cache[(_stk, q)] = (dividend, ex_date)
+                _fhds_cache[(_stk, q)] = (dividend, ex_date, _type_label)
             except (KeyError, TypeError, ValueError, IndexError, ZeroDivisionError):
                 continue
 
@@ -332,7 +360,7 @@ def cal_fhds(dt, new):
                 cached = _fhds_cache.get((stk, q))
                 if cached is None:
                     continue
-                dividend, ex_date = cached
+                dividend, ex_date, _ = cached
                 if ex_date <= _dt or ex_date > maturity:
                     continue
                 if dividend and not np.isnan(dividend):
@@ -343,7 +371,68 @@ def cal_fhds(dt, new):
     df_result = pd.DataFrame(results).set_index("order_book_id")
     daily_df = new.merge(df_result, on="order_book_id", how="right")
 
+    if return_detail:
+        _detail_rows = []
+        for _pfx, _sw in _comp_cache.items():
+            for _stk, (_price, _) in _sw.items():
+                for q in quarter_list:
+                    cached = _fhds_cache.get((_stk, q))
+                    if cached is None:
+                        continue
+                    _dividend, _ex_date, _type_label = cached
+                    _detail_rows.append({
+                        "stock": _stk, "prefix": _pfx, "quarter": q,
+                        "type": _type_label, "dividend": _dividend, "ex_date": _ex_date,
+                    })
+        return daily_df, pd.DataFrame(_detail_rows)
+
     return daily_df
+
+
+def plot_fhds_detail(detail_df, prefixes=None):
+    """分红除权日历图：每指数一个子图，柱状（除权公司数，按①②类型堆叠）+ 折线（平均每股分红）"""
+    if detail_df.empty:
+        return None
+    if prefixes is None:
+        prefixes = sorted(detail_df["prefix"].unique())
+    elif isinstance(prefixes, str):
+        prefixes = [prefixes]
+
+    _df = detail_df.copy()
+    _df["ex_date_d"] = _df["ex_date"].dt.date
+    _type_order = ["①方案实施", "②预案", "②决案", "③历史平均", "④去年同期"]
+    _colors = {"①方案实施": "#2ca02c", "②决案": "#ff7f0e", "②预案": "#d62728", "③历史平均": "#9467bd", "④去年同期": "#8c564b"}
+
+    fig, axes = plt.subplots(len(prefixes), 1, figsize=(14, 4.5 * len(prefixes)), sharex=False, constrained_layout=True)
+    if len(prefixes) == 1:
+        axes = [axes]
+
+    for i, pfx in enumerate(prefixes):
+        ax = axes[i]
+        sub = _df[_df["prefix"] == pfx]
+        if sub.empty:
+            continue
+        dates = sorted(sub["ex_date_d"].unique())
+
+        bottom = np.zeros(len(dates))
+        for t in _type_order:
+            cnts = sub[sub["type"] == t].groupby("ex_date_d").size().reindex(dates, fill_value=0).values
+            ax.bar(dates, cnts, bottom=bottom, label=t, color=_colors.get(t, "#999"), width=0.8)
+            bottom = bottom + cnts
+
+        avg_div = sub.groupby("ex_date_d")["dividend"].mean().reindex(dates)
+        ax2 = ax.twinx()
+        ax2.plot(dates, avg_div.values, "o-", color="#1f77b4", lw=2, markersize=6)
+
+        ax.set_title(pfx, fontsize=12, fontweight="bold")
+        ax.set_ylabel("除权公司数")
+        ax2.set_ylabel("平均每股分红", color="#1f77b4")
+        ax2.tick_params(axis="y", labelcolor="#1f77b4")
+        ax.legend(fontsize=8, loc="upper left")
+        ax.grid(alpha=0.3)
+        ax.tick_params(axis="x", rotation=45)
+
+    return fig
 
 
 
