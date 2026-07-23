@@ -6,6 +6,10 @@ import seaborn as sns
 import streamlit as st
 from rqdatac import *
 
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+KJDIR = os.path.join(BASE_DIR, "data_base", "index")
+
 STYLE_COLS = ['beta', 'book_to_price', 'earnings_yield', 'growth',
        'leverage', 'liquidity', 'momentum', 'non_linear_size',
        'residual_volatility', 'size']
