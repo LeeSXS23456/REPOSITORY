@@ -742,7 +742,7 @@ def cal_fhds_history(c_id, date_list, idx_close_df, weight_dicts, price_dicts,
                     continue
                 # PIT: 只看 his_dt 之前创建的 timeline 记录
                 rows = ts.loc[[q]]
-                rows = rows[rows['rice_create_tm'] <= his_dt]
+                rows = rows[rows['rice_create_tm'] <= his_dt + pd.Timedelta(hours=23, minutes=59, seconds=59)]
                 if rows.empty:
                     continue
 
@@ -829,7 +829,7 @@ def cal_fhds_history(c_id, date_list, idx_close_df, weight_dicts, price_dicts,
                         if isinstance(_cur_row, pd.DataFrame):
                             _cur_row = _cur_row.iloc[-1]
                         _rice = _cur_row['rice_create_tm']
-                        if pd.isna(_rice) or pd.Timestamp(_rice) > his_dt:
+                        if pd.isna(_rice) or pd.Timestamp(_rice) > his_dt + pd.Timedelta(hours=23, minutes=59, seconds=59):
                             continue
                         current_eps = float(_cur_row['basic_earnings_per_share'])
                         n_profit = float(_cur_row['net_profit'])
