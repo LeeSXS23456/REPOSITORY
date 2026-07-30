@@ -18,7 +18,7 @@ dpsdir = os.path.join(BASE_DIR, "data_base", "basis","866011.RI_dps_22_25H.pkl")
 #df_dps = pd.read_pickle(dpsdir)
 timedir = os.path.join(BASE_DIR, "data_base", "basis","dividend_timeline.pkl")
 #df_time = pd.read_pickle(timedir)
-alldir = os.path.join(BASE_DIR, "data_base", "index_component_日频","866011.RI_20_26D_dict.pkl")
+alldir = os.path.join(BASE_DIR, "data_base", "index_component_日频","866011.RI_19_26D_dict.pkl")
 all_df = pd.read_pickle(alldir)
 all_ids = list(all_df.values())[-1].index.tolist()
 

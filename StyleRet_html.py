@@ -7,6 +7,7 @@ import pandas as pd
 import streamlit as st
 from helpfunc_basis import *
 from helpfunc_barra import *
+from helpfunc_vol import *
 from rqdatac import *
 
 # from matplotlib import font_manager
@@ -160,7 +161,7 @@ st.title("行情面板")
 st.sidebar.header("配置")
 st.session_state.sd = st.sidebar.date_input("起始", pd.Timestamp("2020-01-02"), max_value=pd.Timestamp("2036-03-25"))
 st.session_state.ed = st.sidebar.date_input("结束", last_trading_day(), max_value=pd.Timestamp("2036-03-25"))
-mode = st.sidebar.radio("模式", ["Barra大类综合", "Barra单因子详细", "基差成本监控"])
+mode = st.sidebar.radio("模式", ["Barra大类综合", "Barra单因子详细", "基差成本监控", "全市场波动"])
 
 sd = pd.Timestamp(st.session_state.sd)
 ed = pd.Timestamp(st.session_state.ed)
@@ -454,6 +455,38 @@ elif mode == "基差成本监控":
     st.pyplot(fig)
     plt.close(fig)
     st.markdown(tbl_html, unsafe_allow_html=True)
+
+elif mode == "全市场波动":
+    @st.cache_data(ttl=3600, show_spinner="加载全市场收益率数据…")
+    def _load_ret_dict(_end):
+        return update_Aret(_end)
+
+    ret_dict = _load_ret_dict(ed)
+
+    # 频率 + 日期
+    _freq = st.radio("频率", ["daily", "weekly"], horizontal=True)
+
+    with st.spinner("计算截面波动率…"):
+        figs, stats = main(ret_dict, freq=_freq, start=sd, end=ed)
+
+    # 三张图
+    for _key, _title in [("vol", "绝对波动"), ("rank", "历史排位"), ("adr", "ADR")]:
+        st.markdown(f"**{_title}**")
+        st.pyplot(figs[_key])
+        plt.close(figs[_key])
+
+    # 数据表
+    st.markdown("---")
+    st.markdown("**全量统计指标**")
+    _tbl = stats.reset_index()
+    if "date" in _tbl.columns:
+        _tbl["date"] = _tbl["date"].dt.strftime("%Y-%m-%d")
+    _num_cols = _tbl.select_dtypes(include=[np.number]).columns.tolist()
+    st.dataframe(_tbl.style.format({c: "{:.4f}" for c in _num_cols}, na_rep="-"),
+                 use_container_width=True, height=400)
+
+    csv = _tbl.to_csv(index=False).encode("utf-8-sig")
+    st.download_button("下载 CSV", csv, f"market_vol_{_freq}_{sd.date()}_{ed.date()}.csv", "text/csv")
 
 else:
     sub_cat = st.radio("类型", ["风格因子", "行业因子"], horizontal=True)
