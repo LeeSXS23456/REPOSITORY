@@ -457,36 +457,73 @@ elif mode == "基差成本监控":
     st.markdown(tbl_html, unsafe_allow_html=True)
 
 elif mode == "全市场波动":
-    @st.cache_data(ttl=3600, show_spinner="加载全市场收益率数据…")
-    def _load_ret_dict(_end):
-        return update_Aret(_end)
+    CACHE_DIR = "E:/SJTU/intern/gtht/全市场波动率测算/output"
+    os.makedirs(CACHE_DIR, exist_ok=True)
 
-    ret_dict = _load_ret_dict(ed)
+    # 用户选择
+    _c1, _c2, _c3 = st.columns(3)
+    with _c1:
+        _freq = st.radio("频率", ["daily", "weekly"], horizontal=True)
+    with _c2:
+        _uni_opts = ["全A", "沪深300", "中证500", "中证1000", "上证50"]
+        _uni_opts += ['石油石化', '煤炭', '有色金属', '电力及公用事业', '钢铁', '基础化工', '建筑', '建材', '轻工制造',
+       '机械', '电力设备及新能源', '国防军工', '汽车', '商贸零售', '消费者服务', '家电', '纺织服装',
+       '医药', '食品饮料', '农林牧渔', '银行', '非银行金融', '房地产', '综合金融', '交通运输', '电子',
+       '通信', '计算机', '传媒', '综合']
+        _universe = st.selectbox("分域", _uni_opts)
+    with _c3:
+        _weighted = st.radio("加权", ["等权", "加权"], horizontal=True) == "加权"
 
-    # 频率 + 日期
-    _freq = st.radio("频率", ["daily", "weekly"], horizontal=True)
+    # 缓存路径
+    _tag = f"{'w' if _weighted else 'ew'}"
+    _cache_path = os.path.join(CACHE_DIR, f"{_freq}_{_universe}_{_tag}.pkl")
 
-    with st.spinner("计算截面波动率…"):
-        figs, stats = main(ret_dict, freq=_freq, start=sd, end=ed)
+    # 确定计算区间：缓存最新日 → ed（增量）；无缓存则 sd → ed（全量）
+    if os.path.exists(_cache_path):
+        cached = pd.read_pickle(_cache_path)
+        _calc_start = cached.index.max() + pd.Timedelta(days=1)
+    else:
+        cached = pd.DataFrame()
+        _calc_start = sd
 
-    # 三张图
+    if _calc_start <= ed:
+        with st.spinner(f"计算 {_universe} {_freq} {_tag}（{_calc_start.date()} ~ {ed.date()}）…"):
+            new_df = calc_cs_stats(_freq, start=_calc_start, end=ed,
+                                   universe=_universe, weighted=_weighted)
+        cached = pd.concat([cached, new_df])
+        cached = cached[~cached.index.duplicated(keep="last")].sort_index()
+        cached.to_pickle(_cache_path)
+    else:
+        st.info("数据已是最新，直接从缓存加载")
+
+    # 展示区间
+    _display = cached.loc[pd.Timestamp(sd):pd.Timestamp(ed)]
+    if _display.empty:
+        st.warning("所选区间无数据")
+        st.stop()
+
+    # 百分位 + 画图
+    _lookback = 252 if _freq == "daily" else 52
+    _pct = calc_vol_percentile(cached["cs_vol"], window=_lookback)
+    _pct_display = _pct.loc[_display.index]
+    print(_pct_display.tail())
+
+    figs = plot_vol_series(_display, _pct_display, _freq)
     for _key, _title in [("vol", "绝对波动"), ("rank", "历史排位"), ("adr", "ADR")]:
         st.markdown(f"**{_title}**")
         st.pyplot(figs[_key])
         plt.close(figs[_key])
 
-    # 数据表
+    # 数据表 + 下载
     st.markdown("---")
-    st.markdown("**全量统计指标**")
-    _tbl = stats.reset_index()
-    if "date" in _tbl.columns:
-        _tbl["date"] = _tbl["date"].dt.strftime("%Y-%m-%d")
+    st.markdown("**统计指标**")
+    _tbl = _display.reset_index()
     _num_cols = _tbl.select_dtypes(include=[np.number]).columns.tolist()
     st.dataframe(_tbl.style.format({c: "{:.4f}" for c in _num_cols}, na_rep="-"),
                  use_container_width=True, height=400)
-
     csv = _tbl.to_csv(index=False).encode("utf-8-sig")
-    st.download_button("下载 CSV", csv, f"market_vol_{_freq}_{sd.date()}_{ed.date()}.csv", "text/csv")
+    _fname = f"cs_vol_{_freq}_{_universe}_{_tag}_{sd.date()}_{ed.date()}.csv"
+    st.download_button("下载 CSV", csv, _fname, "text/csv")
 
 else:
     sub_cat = st.radio("类型", ["风格因子", "行业因子"], horizontal=True)
