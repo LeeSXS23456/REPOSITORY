@@ -16,7 +16,14 @@ ARTDIR = "E:/SJTU/intern/gtht/barra/data_base/stk_ret"
 INDDIR = "E:/SJTU/intern/gtht/barra/data_base/industry_component_日频"
 MCPDIR = "E:/SJTU/intern/gtht/barra/data_base/stk_mcp"
 
-_UNIVERSE_INDEX = {"沪深300": "000300", "中证500": "000905", "中证1000": "000852", "上证50": "000016"}
+_UNIVERSE_INDEX = {"沪深300": "000300.XSHG", "中证500": "000905.XSHG", "中证1000": "000852.XSHG", "上证50": "000016.XSHG","中证2000":"932000.INDX"}
+
+# ── 简易 parquet 缓存：同一文件整个会话只读一次 ──
+_pq = {}
+def _r(path):
+    if path not in _pq:
+        _pq[path] = pd.read_parquet(path) if os.path.exists(path) else pd.DataFrame()
+    return _pq[path]
 
 def _append_parquet(new_df, base_dir):
     """将 DataFrame(rows=dates, cols=stocks) 按季度追加到 base_dir 下的 parquet"""
@@ -24,16 +31,22 @@ def _append_parquet(new_df, base_dir):
         path = os.path.join(base_dir, f"{q}.parquet")
         if os.path.exists(path):
             old = pd.read_parquet(path)
+            n_old = len(old)
             all_cols = old.columns.union(df_q.columns)
             df_q = pd.concat([old, df_q], axis=0).reindex(columns=all_cols)
             df_q = df_q[~df_q.index.duplicated(keep="last")].sort_index()
+            n_new = len(df_q)
+            print(f"更新{n_new - n_old}条数据至 {path}（原{n_old}条）")
         df_q.to_parquet(path, engine="pyarrow", compression="zstd")
+        _pq.pop(path, None)  # 写入后清除缓存，保证下次读取拿到最新数据
 
 
 def update_Aret(end):
     """增量更新成分股、收益率、行业、市值四类数据至 end 日期"""
     # ① 成分股：检查增量
     df = pd.read_pickle(os.path.join(ACPDIR, "866011.RI_19_26D_dict.pkl"))
+    df_2000 = pd.read_pickle(os.path.join(ACPDIR, "932000.INDX_20_26D_dict.pkl"))
+
     dates = sorted(df.keys())
     md = dates[-1]
     end_ts = pd.Timestamp(end)
@@ -41,6 +54,8 @@ def update_Aret(end):
         return
 
     temp = index_weights("866011.RI", start_date=md, end_date=end, market="cn")
+    temp_2000 = index_weights_ex("932000.INDX", start_date=md, end_date=end, market='cn')
+
     new_dates = sorted(d for d in temp.index.get_level_values(0).unique() if d > md)
     if not new_dates:
         return
@@ -48,6 +63,8 @@ def update_Aret(end):
     ret_rows, ind_rows, value_rows = {}, {}, {}
     for dt in new_dates:
         df[dt] = temp.loc[dt]["weight"]
+        df_2000[dt] = temp_2000.loc[dt]["weight"]
+
         stk = df[dt].index.tolist()
         stk_fb = [s for s in stk if not s.endswith(".BJSE")]
 
@@ -63,6 +80,9 @@ def update_Aret(end):
     # 保存成分股
     with open(os.path.join(ACPDIR, "866011.RI_19_26D_dict.pkl"), "wb") as f:
         pickle.dump(df, f)
+    with open(os.path.join(ACPDIR, "932000.INDX_20_26D_dict.pkl"), "wb") as f:
+        pickle.dump(df_2000, f)
+        
 
     # 保存收益率 + 行业（按季度 parquet）
     _append_parquet(pd.DataFrame(ret_rows).T.sort_index().astype("float32"), ARTDIR)
@@ -84,7 +104,7 @@ def _quarter(date):
 def _load_mcap(date):
     """读取单日流通市值 Series(stock→mcap)"""
     q = _quarter(date)
-    sr = pd.read_parquet(os.path.join(MCPDIR, f"{q}.parquet")).loc[pd.Timestamp(date)]
+    sr = _r(os.path.join(MCPDIR, f"{q}.parquet")).loc[pd.Timestamp(date)]
     return sr.dropna()
 
 
@@ -97,7 +117,7 @@ def _get_universe(date, universe, weighted):
 
     # ---- 宽基指数 ----
     if universe in _UNIVERSE_INDEX:
-        path = os.path.join(ACPDIR, f"{_UNIVERSE_INDEX[universe]}.XSHG_20_26D_dict.pkl")
+        path = os.path.join(ACPDIR, f"{_UNIVERSE_INDEX[universe]}_20_26D_dict.pkl")
         with open(path, "rb") as f:
             sr = pickle.load(f).get(ts)
         if sr is None:
@@ -110,7 +130,7 @@ def _get_universe(date, universe, weighted):
         path = os.path.join(INDDIR, f"{_quarter(ts)}.parquet")
         if not os.path.exists(path):
             return {}
-        ind = pd.read_parquet(path)
+        ind = _r(path)
         if ts not in ind.index:
             return {}
         stocks = ind.loc[ts]
@@ -147,7 +167,7 @@ def _w_stats(r, w=None):
 def _load_ret(date):
     """读取单日全市场收益率 Series(stock→ret)，非交易日抛 KeyError"""
     q = _quarter(date)
-    df = pd.read_parquet(os.path.join(ARTDIR, f"{q}.parquet"))
+    df = _r(os.path.join(ARTDIR, f"{q}.parquet"))
     ts = pd.Timestamp(date)
     if ts not in df.index:
         raise KeyError(f"{date.date()} 不是交易日")
@@ -167,7 +187,7 @@ def _load_week_ret(date):
         q = _quarter(qt)
         path = os.path.join(ARTDIR, f"{q}.parquet")
         if os.path.exists(path):
-            df = pd.read_parquet(path)
+            df = _r(path)
             wk = [d for d in df.index if d.isocalendar()[:2] == iso]
             if wk:
                 frames.append(df.loc[wk])
@@ -234,7 +254,7 @@ def _trading_days(start, end):
 
 def calc_cs_stats(freq="daily", start=None, end=None, universe="全A", weighted=False):
     """
-    计算截面波动率 + 涨跌比 + ADR。日期范围由 start/end 控制。
+    计算截面波动率 + 涨跌比 + ADR（向量化：批量加载 + 矩阵运算）。
 
     Parameters
     ----------
@@ -247,17 +267,90 @@ def calc_cs_stats(freq="daily", start=None, end=None, universe="全A", weighted=
     -------
     pd.DataFrame  index=date
     """
-    dates = _trading_days(start, end)
-    rows = []
-    for d in sorted(dates):
-        try:
-            rows.append(_daily_stats(d, universe, weighted) if freq == "daily"
-                       else _weekly_stats(d, universe, weighted))
-        except (KeyError, ValueError):
-            continue
-    if not rows:
-        raise ValueError("所有日期均无效（非交易日或非周尾）")
-    return pd.DataFrame(rows).set_index("date")
+    dates = sorted(_trading_days(start, end))
+    if not dates:
+        raise ValueError("日期范围内无交易日")
+    dates_ts = pd.DatetimeIndex(dates)
+
+    # ── 1. 批量加载全部收益率 → T×N 矩阵（_r 缓存：每季度文件只读一次）──
+    quarters = sorted({f"{d.year}Q{(d.month - 1) // 3 + 1}" for d in dates_ts})
+    ret_daily = pd.concat([_r(os.path.join(ARTDIR, f"{q}.parquet")) for q in quarters])
+    ret_daily = ret_daily.sort_index()
+    ret_daily = ret_daily[ret_daily.index.isin(dates_ts)]
+
+    # ── 2. 日频直接用；周频复合 ──
+    if freq == "weekly":
+        week = ret_daily.index.to_period("W")
+        n_days = ret_daily.notna().any(axis=1).groupby(week).sum()
+        ret = (1 + ret_daily.fillna(0)).groupby(week).prod() - 1
+
+        # 取每周最后一个交易日作为索引
+        last_day = ret_daily.index.to_series().groupby(week).last()
+        ret.index = pd.DatetimeIndex(last_day.values)
+        n_days.index = ret.index
+
+        # 只保留 dates_ts 中的周尾
+        ret = ret.loc[ret.index.intersection(dates_ts)]
+        n_days = n_days.loc[ret.index]
+    else:
+        ret = ret_daily.loc[ret_daily.index.intersection(dates_ts)]
+
+    if ret.empty:
+        raise ValueError("无有效收益率数据")
+
+    # ── 3. 构建权重矩阵（0=不在域内），等权全A 则直接用 ret ──
+    if universe == "全A" and not weighted:
+        # 等权全市场：三行 pandas，一次算完所有日期！
+        std = ret.std(axis=1, ddof=0).values
+        up  = (ret > 0).mean(axis=1).values
+        dn  = (ret < 0).mean(axis=1).values
+    else:
+        # 逐日收集权重（_get_universe 中 _r 已消除 I/O 瓶颈）
+        w_rows = {}
+        for d in ret.index:
+            uni = _get_universe(d, universe, weighted)
+            if uni is not None:
+                w_rows[d] = uni
+        W = pd.DataFrame(w_rows).T.reindex(columns=ret.columns).fillna(0.0)
+        W = W.loc[ret.index]
+
+        # 矩阵运算：加权标准差 = sqrt(Σ w·(r - r̄)² / Σ w)
+        common = ret.columns.intersection(W.columns)
+        R = ret[common].values.astype(np.float64)
+        Wv = W[common].values.astype(np.float64)
+        # 有效收益mask
+        mask = ~np.isnan(R)
+        Wv = Wv * mask
+        # Wv = np.where(np.isnan(R), 0.0, Wv)               # 无收益 → 权重置 0
+        w_sum = Wv.sum(axis=1)
+        valid = w_sum > 0
+
+        std = np.full(len(ret), np.nan)
+        up  = np.full(len(ret), np.nan)
+        dn  = np.full(len(ret), np.nan)
+        if valid.any():
+            Rv, Wvv, ws = R[valid], Wv[valid], w_sum[valid]
+            R_clean = np.nan_to_num(Rv, nan=0.0)
+
+            mean = (Wvv *  R_clean).sum(axis=1) / ws
+            diff =  R_clean - mean[:, None]
+            std[valid] = np.sqrt((Wvv * diff ** 2).sum(axis=1) / ws)
+            up[valid]  = (Wvv * (Rv > 0)).sum(axis=1) / ws
+            dn[valid]  = (Wvv * (Rv < 0)).sum(axis=1) / ws
+
+    # ── 4. 组装结果 ──
+    adr = np.where(dn > 0, up / dn, np.nan)
+    result = pd.DataFrame({
+        "cs_vol": std, "up_pct": up, "down_pct": dn,
+        "adr": adr, "log_adr": np.where((up > 0) & (dn > 0), np.log(adr), np.nan),
+    }, index=ret.index)
+    result.index.name = "date"
+
+    if freq == "weekly":
+        result["n_days"] = n_days.values
+        result["short_week"] = n_days.values < 5
+
+    return result
 
 
 def calc_vol_percentile(cs_vol, window=252):
@@ -336,12 +429,6 @@ def plot_vol_series(stats, pct_rank, freq="daily"):
     ax1.set_title(f"Market Cross-Sectional Volatility ({freq})")
     ax1.set_ylim(0, None)
     ax1.grid(alpha=0.25)
-
-    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
-    sm.set_array([])
-    cbar = fig1.colorbar(sm, ax=ax1, orientation="vertical", shrink=0.95, pad=0.02)
-    cbar.set_label("Percentile Rank", fontsize=9)
-    cbar.set_ticks([0, 0.25, 0.5, 0.75, 1])
     _fmt_dates(ax1)
 
     # ===== Fig 2: 历史排位 =====
@@ -387,7 +474,7 @@ def main(freq="daily", start=None, end=None, universe="全A", weighted=False, lo
         all_dates = _trading_days(None, None)
         idx = [i for i, d in enumerate(all_dates) if d >= pd.Timestamp(start)]
         if idx:
-            rank_start = all_dates[max(0, idx[0] - lookback)]
+            rank_start = all_dates[max(0, idx[0] - 252)]
 
     df_full = calc_cs_stats(freq, rank_start, end, universe, weighted)
     pct_full = calc_vol_percentile(df_full["cs_vol"], window=lookback)
@@ -397,11 +484,47 @@ def main(freq="daily", start=None, end=None, universe="全A", weighted=False, lo
     pct = pct_full.loc[df.index]
 
     figs = plot_vol_series(df, pct, freq)
-    return figs, df
+    return figs, df_full
 
 
 if __name__ == "__main__":
-    u = "中证500"
-    print(u)
-    figs, stats = main(freq="daily", start="2026-07-01", universe=u)
-    plt.show()
+    desdir = "E:/SJTU/intern/gtht/全市场波动率测算/output"
+
+    # u = "石油石化"
+    # f = "weekly"
+    # w = False
+    # _tag = f"{'w' if w else 'ew'}"
+    # print((f"计算截面波动率：freq={f}, universe={u}, weighted={w}"))
+    # figs, stats = main(freq=f, start="2020-01-01", universe=u, weighted=w)
+    # #存储
+    # stats.to_pickle(f"{desdir}/{f}_{u}_{_tag}.pkl")
+    # print(stats.tail())
+    # plt.show()
+
+
+    #批量计算
+    universes = [] + list(_UNIVERSE_INDEX.keys()) + ['石油石化', '煤炭', '有色金属', '电力及公用事业', '钢铁', '基础化工', '建筑', '建材', '轻工制造',
+       '机械', '电力设备及新能源', '国防军工', '汽车', '商贸零售', '消费者服务', '家电', '纺织服装',
+       '医药', '食品饮料', '农林牧渔', '银行', '非银行金融', '房地产', '综合金融', '交通运输', '电子',
+       '通信', '计算机', '传媒', '综合']
+    # "全A"
+    
+    for u in universes:
+        for f in ["daily", "weekly"]:
+            for w in [False, True]:
+                _tag = f"{'w' if w else 'ew'}"
+                print(f"计算：universe={u}, freq={f}, weighted={w}")
+
+                try:
+                    figs, stats = main(freq=f, start="2020-01-01", universe=str(u), weighted=w)
+                except Exception as e:
+                    print(f"  × 跳过：{e}")
+                    continue
+
+                stats.to_pickle(f"{desdir}/{f}_{u}_{_tag}.pkl")
+                print(stats.head())
+
+                for name, fig in figs.items():
+                    fig.savefig(f"{desdir}/plots/{f}_{u}_{_tag}_{name}.png", dpi=150, bbox_inches="tight")
+                    plt.close(fig)
+

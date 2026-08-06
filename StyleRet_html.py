@@ -474,55 +474,63 @@ elif mode == "全市场波动":
     with _c3:
         _weighted = st.radio("加权", ["等权", "加权"], horizontal=True) == "加权"
 
-    # 缓存路径
+	    # ── 内存缓存（切换下拉框后回来直接秒出）──
     _tag = f"{'w' if _weighted else 'ew'}"
     _cache_path = os.path.join(CACHE_DIR, f"{_freq}_{_universe}_{_tag}.pkl")
+    _data_key = f"vol_data_{_freq}_{_universe}_{_tag}"       # 全量数据（与日期无关）
+    _view_key = f"vol_view_{_freq}_{_universe}_{_tag}_{sd.date()}_{ed.date()}"  # 视图（与日期绑定）
 
-    # 确定计算区间：缓存最新日 → ed（增量）；无缓存则 sd → ed（全量）
-    if os.path.exists(_cache_path):
-        cached = pd.read_pickle(_cache_path)
-        _calc_start = cached.index.max() + pd.Timedelta(days=1)
+    # ① 全量数据：内存 > 磁盘 > 从头计算
+    if _data_key in st.session_state:
+        cached = st.session_state[_data_key]
     else:
-        cached = pd.DataFrame()
-        _calc_start = sd
+        update_Aret(ed)
+        if os.path.exists(_cache_path):
+            cached = pd.read_pickle(_cache_path)
+            _calc_start = cached.index.max() + pd.Timedelta(days=1)
+        else:
+            cached = pd.DataFrame()
+            _calc_start = sd
 
-    if _calc_start <= ed:
-        with st.spinner(f"计算 {_universe} {_freq} {_tag}（{_calc_start.date()} ~ {ed.date()}）…"):
-            new_df = calc_cs_stats(_freq, start=_calc_start, end=ed,
-                                   universe=_universe, weighted=_weighted)
-        cached = pd.concat([cached, new_df])
-        cached = cached[~cached.index.duplicated(keep="last")].sort_index()
-        cached.to_pickle(_cache_path)
+        if _calc_start <= ed:
+            with st.spinner(f"计算 {_universe} {_freq} {_tag}（{_calc_start.date()} ~ {ed.date()}）…"):
+                new_df = calc_cs_stats(_freq, start=_calc_start, end=ed,
+                                       universe=_universe, weighted=_weighted)
+            cached = pd.concat([cached, new_df])
+            cached = cached[~cached.index.duplicated(keep="last")].sort_index()
+            cached.to_pickle(_cache_path)
+        st.session_state[_data_key] = cached
+
+    # ② 视图（figs + 表格）：命中则跳过画图，否则重新生成
+    if _view_key in st.session_state:
+        figs, _tbl, csv, _fname = st.session_state[_view_key]
+        st.info("📋 配置未变，从内存直接展示")
     else:
-        st.info("数据已是最新，直接从缓存加载")
+        _display = cached.loc[pd.Timestamp(sd):pd.Timestamp(ed)]
+        if _display.empty:
+            st.warning("所选区间无数据")
+            st.stop()
 
-    # 展示区间
-    _display = cached.loc[pd.Timestamp(sd):pd.Timestamp(ed)]
-    if _display.empty:
-        st.warning("所选区间无数据")
-        st.stop()
+        _lookback = 252 if _freq == "daily" else 52
+        _pct = calc_vol_percentile(cached["cs_vol"], window=_lookback)
+        _pct_display = _pct.loc[_display.index]
 
-    # 百分位 + 画图
-    _lookback = 252 if _freq == "daily" else 52
-    _pct = calc_vol_percentile(cached["cs_vol"], window=_lookback)
-    _pct_display = _pct.loc[_display.index]
-    print(_pct_display.tail())
+        figs = plot_vol_series(_display, _pct_display, _freq)
+        _tbl = _display.reset_index()
+        csv = _tbl.to_csv(index=False).encode("utf-8-sig")
+        _fname = f"cs_vol_{_freq}_{_universe}_{_tag}_{sd.date()}_{ed.date()}.csv"
+        st.session_state[_view_key] = (figs, _tbl, csv, _fname)
 
-    figs = plot_vol_series(_display, _pct_display, _freq)
+    # ── 展示 ──
     for _key, _title in [("vol", "绝对波动"), ("rank", "历史排位"), ("adr", "ADR")]:
         st.markdown(f"**{_title}**")
         st.pyplot(figs[_key])
-        plt.close(figs[_key])
 
-    # 数据表 + 下载
     st.markdown("---")
     st.markdown("**统计指标**")
-    _tbl = _display.reset_index()
     _num_cols = _tbl.select_dtypes(include=[np.number]).columns.tolist()
     st.dataframe(_tbl.style.format({c: "{:.4f}" for c in _num_cols}, na_rep="-"),
                  use_container_width=True, height=400)
-    csv = _tbl.to_csv(index=False).encode("utf-8-sig")
-    _fname = f"cs_vol_{_freq}_{_universe}_{_tag}_{sd.date()}_{ed.date()}.csv"
     st.download_button("下载 CSV", csv, _fname, "text/csv")
 
 else:
