@@ -11,10 +11,11 @@ from rqdatac import *
 import pickle
 from datetime import datetime
 
-ACPDIR = "E:/SJTU/intern/gtht/barra/data_base/index_component_日频"
-ARTDIR = "E:/SJTU/intern/gtht/barra/data_base/stk_ret"
-INDDIR = "E:/SJTU/intern/gtht/barra/data_base/industry_component_日频"
-MCPDIR = "E:/SJTU/intern/gtht/barra/data_base/stk_mcp"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ACPDIR = os.path.join(BASE_DIR, "data_base", "index_component_日频")
+ARTDIR = os.path.join(BASE_DIR, "data_base", "stk_ret")
+INDDIR = os.path.join(BASE_DIR, "data_base", "industry_component_日频")
+MCPDIR = os.path.join(BASE_DIR, "data_base", "stk_mcp")
 
 _UNIVERSE_INDEX = {"沪深300": "000300.XSHG", "中证500": "000905.XSHG", "中证1000": "000852.XSHG", "上证50": "000016.XSHG","中证2000":"932000.INDX"}
 
@@ -242,13 +243,10 @@ def _weekly_stats(date, universe="全A", weighted=False):
 
 
 def _trading_days(start, end):
-    """从 866011.RI 权重字典取 [start, end] 内交易日"""
-    with open(os.path.join(ACPDIR, "866011.RI_19_26D_dict.pkl"), "rb") as f:
-        cal = sorted(pickle.load(f).keys())
-    if start is not None:
-        cal = [d for d in cal if d >= pd.Timestamp(start)]
-    if end is not None:
-        cal = [d for d in cal if d <= pd.Timestamp(end)]
+    """返回指定日期区间内的交易日列表"""
+    dates = pd.read_pickle("trading_dates.pkl")
+    cal_p = [pd.Timestamp(d) for d in dates]
+    cal = [d for d in cal_p if (start is None or d >= pd.Timestamp(start)) and (end is None or d <= pd.Timestamp(end))]
     return cal
 
 
@@ -304,6 +302,7 @@ def calc_cs_stats(freq="daily", start=None, end=None, universe="全A", weighted=
         std = ret.std(axis=1, ddof=0).values
         up  = (ret > 0).mean(axis=1).values
         dn  = (ret < 0).mean(axis=1).values
+        avg_ret = ret.mean(axis=1).values                     # 等权平均收益
     else:
         # 逐日收集权重（_get_universe 中 _r 已消除 I/O 瓶颈）
         w_rows = {}
@@ -328,12 +327,14 @@ def calc_cs_stats(freq="daily", start=None, end=None, universe="全A", weighted=
         std = np.full(len(ret), np.nan)
         up  = np.full(len(ret), np.nan)
         dn  = np.full(len(ret), np.nan)
+        avg_ret = np.full(len(ret), np.nan)                  # 加权平均收益
         if valid.any():
             Rv, Wvv, ws = R[valid], Wv[valid], w_sum[valid]
             R_clean = np.nan_to_num(Rv, nan=0.0)
 
-            mean = (Wvv *  R_clean).sum(axis=1) / ws
-            diff =  R_clean - mean[:, None]
+            mean = (Wvv * R_clean).sum(axis=1) / ws
+            avg_ret[valid] = mean                             # 保存加权平均收益
+            diff = R_clean - mean[:, None]
             std[valid] = np.sqrt((Wvv * diff ** 2).sum(axis=1) / ws)
             up[valid]  = (Wvv * (Rv > 0)).sum(axis=1) / ws
             dn[valid]  = (Wvv * (Rv < 0)).sum(axis=1) / ws
@@ -343,6 +344,7 @@ def calc_cs_stats(freq="daily", start=None, end=None, universe="全A", weighted=
     result = pd.DataFrame({
         "cs_vol": std, "up_pct": up, "down_pct": dn,
         "adr": adr, "log_adr": np.where((up > 0) & (dn > 0), np.log(adr), np.nan),
+        "ret": avg_ret,
     }, index=ret.index)
     result.index.name = "date"
 
@@ -402,9 +404,14 @@ def _fmt_dates(ax):
         label.set_fontsize(7.5)
 
 
-def plot_vol_series(stats, pct_rank, freq="daily"):
+def plot_vol_series(stats, pct_rank, freq="daily", ma_windows=None, full_vol=None):
     """
     三张独立图片：波动率（颜色编码）、历史排位、ADR。
+
+    Parameters
+    ----------
+    ma_windows : list[int] or None  MA 窗口列表，如 [5, 20, 60]
+    full_vol   : pd.Series or None  全样本波动率（用于 MA 计算），None 则用 stats
 
     Returns
     -------
@@ -425,7 +432,25 @@ def plot_vol_series(stats, pct_rank, freq="daily"):
             ax1.fill_between(x[i:i+2], y[i:i+2], 0,
                              color=cmap(norm(c[i])), alpha=0.35, lw=0)
     ax1.plot(x, y, color="#333333", lw=0.9)
+
+    # MA 均线（在全样本上计算，再截取展示区间，避免短区间 MA 大量空缺）
+    if ma_windows:
+        src = full_vol if full_vol is not None else stats["cs_vol"]
+        colors = ["#27d3d6", "#1f77b4", "#662ca0"]
+        for w, color in zip(ma_windows, colors):
+            ma = src.rolling(w).mean().reindex(stats.index)
+            ax1.plot(x, ma.values, color=color, lw=1.6, label=f"MA{w}")
+        ax1.legend(fontsize=8, loc="upper left")
+
     ax1.set_ylabel("CS Volatility")
+    # 右轴：累计净值（从 ret 实时计算，展示区间起点归一为 1）
+    if "ret" in stats.columns:
+        _nav = (1 + stats["ret"].fillna(0)).cumprod()
+        _nav = _nav / _nav.iloc[0]
+        ax1r = ax1.twinx()
+        ax1r.plot(x, _nav.values, color="#ff0400", lw=1.8, alpha=0.8)
+        ax1r.set_ylabel("NAV", color="#ff0400", fontsize=9)
+        ax1r.tick_params(axis="y", labelcolor="#ff0400")
     ax1.set_title(f"Market Cross-Sectional Volatility ({freq})")
     ax1.set_ylim(0, None)
     ax1.grid(alpha=0.25)
@@ -443,12 +468,29 @@ def plot_vol_series(stats, pct_rank, freq="daily"):
     ax2.grid(alpha=0.25)
     _fmt_dates(ax2)
 
-    # ===== Fig 3: log ADR =====
+    # ===== Fig 3: log ADR（含 MA）=====
     fig3, ax3 = plt.subplots(**common)
-    ax3.fill_between(x, stats["log_adr"], alpha=0.12, color="#2ca02c")
-    ax3.plot(x, stats["log_adr"], color="#2ca02c", lw=1.2)
+    # ax3.fill_between(x, stats["log_adr"], alpha=0.12, color="#2ca02c")
+    # ax3.plot(x, stats["log_adr"], color="#2ca02c", lw=1.2, label="log ADR")
     ax3.axhline(0, color="gray", ls="--", lw=0.8)
+
+    # MA 均线：日频 [5, 20]，周频 [4, 12]
+    adr_windows = [5, 20] if freq == "daily" else [4, 12]
+    adr_ma_colors = ["#7EC47D", "#216237"]
+    for w, color in zip(adr_windows, adr_ma_colors):
+        ma = stats["log_adr"].rolling(w).mean()
+        ax3.plot(x, ma.values, color=color, lw=1.6, label=f"MA{w}")
+    ax3.legend(fontsize=8, loc="upper left")
+
     ax3.set_ylabel("log ADR")
+    # 右轴：累计净值（从 ret 实时计算，展示区间起点归一为 1）
+    if "ret" in stats.columns:
+        _nav = (1 + stats["ret"].fillna(0)).cumprod()
+        _nav = _nav / _nav.iloc[0]
+        ax3r = ax3.twinx()
+        ax3r.plot(x, _nav.values, color="#ff0400", lw=1.8, alpha=0.8)
+        ax3r.set_ylabel("NAV", color="#ff0400", fontsize=9)
+        ax3r.tick_params(axis="y", labelcolor="#ff0400")
     ax3.set_title(f"Advance/Decline Ratio ({freq})")
     ax3.grid(alpha=0.25)
     _fmt_dates(ax3)
@@ -483,16 +525,16 @@ def main(freq="daily", start=None, end=None, universe="全A", weighted=False, lo
     df = df_full.loc[pd.Timestamp(start or df_full.index[0]):pd.Timestamp(end or df_full.index[-1])]
     pct = pct_full.loc[df.index]
 
-    figs = plot_vol_series(df, pct, freq)
+    figs = plot_vol_series(df, pct, freq, full_vol=df_full["cs_vol"])
     return figs, df_full
 
 
 if __name__ == "__main__":
-    desdir = "E:/SJTU/intern/gtht/全市场波动率测算/output"
+    desdir = "E:/SJTU/intern/gtht/barra/data_base/volatility/output"
 
-    # u = "石油石化"
+    # u = "全A"
     # f = "weekly"
-    # w = False
+    # w = True
     # _tag = f"{'w' if w else 'ew'}"
     # print((f"计算截面波动率：freq={f}, universe={u}, weighted={w}"))
     # figs, stats = main(freq=f, start="2020-01-01", universe=u, weighted=w)

@@ -222,11 +222,11 @@ style_cols = [c for c in cols if not re.search(r"[\u4e00-\u9fff]", str(c))]
 industry_cols = [c for c in cols if re.search(r"[\u4e00-\u9fff]", str(c))]
 
 if mode != "基差成本监控":
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3 = st.columns(3)
     c1.metric("开始时间", f"{df_view.index.min().date()}")
     c2.metric("结束时间", f"{df_view.index.max().date()}")
     c3.metric("交易日", len(df_view))
-    c4.metric("因子", f"风格{len(style_cols)} / 行业{len(industry_cols)}")
+
 
 if mode == "Barra大类综合":
     cat = st.radio("类别", ["风格因子", "行业因子"], horizontal=True)
@@ -457,7 +457,7 @@ elif mode == "基差成本监控":
     st.markdown(tbl_html, unsafe_allow_html=True)
 
 elif mode == "全市场波动":
-    CACHE_DIR = "E:/SJTU/intern/gtht/全市场波动率测算/output"
+    CACHE_DIR = os.path.join(os.path.dirname(__file__), "data_base", "volatility", "output")
     os.makedirs(CACHE_DIR, exist_ok=True)
 
     # 用户选择
@@ -465,7 +465,7 @@ elif mode == "全市场波动":
     with _c1:
         _freq = st.radio("频率", ["daily", "weekly"], horizontal=True)
     with _c2:
-        _uni_opts = ["全A", "沪深300", "中证500", "中证1000", "上证50"]
+        _uni_opts = ["全A", "沪深300", "中证500", "中证1000", "中证2000","上证50"]
         _uni_opts += ['石油石化', '煤炭', '有色金属', '电力及公用事业', '钢铁', '基础化工', '建筑', '建材', '轻工制造',
        '机械', '电力设备及新能源', '国防军工', '汽车', '商贸零售', '消费者服务', '家电', '纺织服装',
        '医药', '食品饮料', '农林牧渔', '银行', '非银行金融', '房地产', '综合金融', '交通运输', '电子',
@@ -478,7 +478,13 @@ elif mode == "全市场波动":
     _tag = f"{'w' if _weighted else 'ew'}"
     _cache_path = os.path.join(CACHE_DIR, f"{_freq}_{_universe}_{_tag}.pkl")
     _data_key = f"vol_data_{_freq}_{_universe}_{_tag}"       # 全量数据（与日期无关）
-    _view_key = f"vol_view_{_freq}_{_universe}_{_tag}_{sd.date()}_{ed.date()}"  # 视图（与日期绑定）
+
+    # MA 均线选择
+    _ma_opts = [5, 20, 60] if _freq == "daily" else [4, 13, 52]
+    _ma_windows = st.multiselect("MA", _ma_opts, [], key=f"ma_{_data_key}")
+    _ma_tuple = tuple(sorted(_ma_windows))
+
+    _view_key = f"vol_view_{_freq}_{_universe}_{_tag}_{sd.date()}_{ed.date()}_{_ma_tuple}"
 
     # ① 全量数据：内存 > 磁盘 > 从头计算
     if _data_key in st.session_state:
@@ -515,7 +521,7 @@ elif mode == "全市场波动":
         _pct = calc_vol_percentile(cached["cs_vol"], window=_lookback)
         _pct_display = _pct.loc[_display.index]
 
-        figs = plot_vol_series(_display, _pct_display, _freq)
+        figs = plot_vol_series(_display, _pct_display, _freq, ma_windows=_ma_windows or None, full_vol=cached["cs_vol"])
         _tbl = _display.reset_index()
         csv = _tbl.to_csv(index=False).encode("utf-8-sig")
         _fname = f"cs_vol_{_freq}_{_universe}_{_tag}_{sd.date()}_{ed.date()}.csv"
