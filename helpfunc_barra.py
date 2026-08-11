@@ -1,10 +1,11 @@
-import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 import numpy as np
 import os
 import pandas as pd
 import seaborn as sns
 import streamlit as st
 from rqdatac import *
+import matplotlib.pyplot as plt
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -98,11 +99,12 @@ def cal_style_corr(df: pd.DataFrame, style_cols=None, window=20,
     return pearson_corr, spearman_corr, fig
 
 
-def cal_style_volatility(df: pd.DataFrame, style_cols=None, vol_window=20, hist_windows=(250, 750)):
+@st.cache_data(show_spinner=False)
+def cal_factor_volatility(df: pd.DataFrame, cols=None, vol_window=20, hist_windows=(250, 750)):
     """计算每个 Barra 因子的日波动率、历史分位数和 z 值。"""
-    if style_cols is None:
-        style_cols = STYLE_COLS
-    vol = df[style_cols].rolling(vol_window).std()
+    if cols is None:
+        cols = STYLE_COLS
+    vol = df[cols].rolling(vol_window).std()
     out = {"vol": vol}
     for w in hist_windows:
         out[f"rank_{w}d"] = vol.rolling(w, min_periods=w).apply(lambda x: pd.Series(x).rank(pct=True).iloc[-1], raw=False)
@@ -111,11 +113,12 @@ def cal_style_volatility(df: pd.DataFrame, style_cols=None, vol_window=20, hist_
 
 
 def render_style_volatility_section(df_view, style_cols, sd, ed, key="barra_vol_date"):
-    vol_ret = cal_style_volatility(df_view[style_cols])
+    vol_ret = cal_factor_volatility(df_view[style_cols])
     vol_df = vol_ret["vol"]
-    dsel = pd.Timestamp(st.date_input("查看日期", ed, min_value=sd, max_value=ed, key=key))
-    dsel = vol_df.index[vol_df.index <= dsel][-1] if (vol_df.index <= dsel).any() else vol_df.index[-1]
-    dates = [ed] if dsel == ed else [ed, dsel]
+    opts = [d.date().isoformat() for d in vol_df.index if pd.notna(d) and d <= ed and d >= sd]
+    picked = st.multiselect("查看日期（可额外选1-3个）", opts, default=[], key=key, max_selections=3)
+    extra_dates = [pd.Timestamp(d) for d in picked if pd.Timestamp(d) != pd.Timestamp(ed)]
+    dates = [pd.Timestamp(ed)] + extra_dates
     cols = pd.MultiIndex.from_product([dates, ["vol", "z_250d", "z_750d", "rank_250d", "rank_750d"]])
     show_df = pd.DataFrame(index=style_cols, columns=cols)
     for d in dates:
@@ -130,10 +133,13 @@ def render_style_volatility_section(df_view, style_cols, sd, ed, key="barra_vol_
     ax.set_title("Barra因子20日波动率")
     ax.grid(alpha=0.3)
     ax.legend(loc="upper left", bbox_to_anchor=(-0.15, 1), fontsize=7.5, ncol=1)
+    ax.xaxis.set_major_locator(mdates.MonthLocator(bymonth=[3, 6, 9, 12]))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y%m'))
+    ax.tick_params(axis='x', labelsize=6)
     fig.autofmt_xdate(); st.pyplot(fig); plt.close(fig)
-    styled = show_df.style.format(lambda v: "-" if pd.isna(v) else (f"{v:.2%}" if abs(v) <= 1 and isinstance(v, (float, np.floating)) and "rank" in str(v) else f"{v:.4f}"))
+    styled = show_df.style.format(lambda v: "-" if pd.isna(v) else f"{v:.2%}" if isinstance(v, (float, np.floating)) and 0 <= v <= 1 else f"{v:.4f}")
     try:
-        styled = styled.bar(subset=pd.IndexSlice[:, pd.IndexSlice[:, ["rank_250d", "rank_750d"]]], color="#d65f5f")
+        styled = styled.bar(subset=pd.IndexSlice[:, pd.IndexSlice[:, ["rank_250d", "rank_750d"]]], color="#d65f5f", vmin=0, vmax=1)
     except Exception:
         pass
     html = styled.set_table_styles([{ "selector": "td, th", "props": [("padding", "5px 10px"), ("text-align", "right"), ("white-space", "nowrap")] },{ "selector": "th", "props": [("text-align", "left"), ("font-weight", "bold")] }]).to_html()
@@ -141,6 +147,8 @@ def render_style_volatility_section(df_view, style_cols, sd, ed, key="barra_vol_
 
 
 def cal_rolling_corr(df, factor1, factor2, sd, ed, windows=(20, 40, 60)):
+
+
     """
     计算风格因子的滚动 Pearson 相关系数，绘制折线图。
 
