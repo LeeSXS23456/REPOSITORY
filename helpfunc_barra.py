@@ -98,6 +98,48 @@ def cal_style_corr(df: pd.DataFrame, style_cols=None, window=20,
     return pearson_corr, spearman_corr, fig
 
 
+def cal_style_volatility(df: pd.DataFrame, style_cols=None, vol_window=20, hist_windows=(250, 750)):
+    """计算每个 Barra 因子的日波动率、历史分位数和 z 值。"""
+    if style_cols is None:
+        style_cols = STYLE_COLS
+    vol = df[style_cols].rolling(vol_window).std()
+    out = {"vol": vol}
+    for w in hist_windows:
+        out[f"rank_{w}d"] = vol.rolling(w, min_periods=w).apply(lambda x: pd.Series(x).rank(pct=True).iloc[-1], raw=False)
+        out[f"z_{w}d"] = (vol - vol.rolling(w, min_periods=w).mean()) / vol.rolling(w, min_periods=w).std(ddof=0)
+    return out
+
+
+def render_style_volatility_section(df_view, style_cols, sd, ed, key="barra_vol_date"):
+    vol_ret = cal_style_volatility(df_view[style_cols])
+    vol_df = vol_ret["vol"]
+    dsel = pd.Timestamp(st.date_input("查看日期", ed, min_value=sd, max_value=ed, key=key))
+    dsel = vol_df.index[vol_df.index <= dsel][-1] if (vol_df.index <= dsel).any() else vol_df.index[-1]
+    dates = [ed] if dsel == ed else [ed, dsel]
+    cols = pd.MultiIndex.from_product([dates, ["vol", "z_250d", "z_750d", "rank_250d", "rank_750d"]])
+    show_df = pd.DataFrame(index=style_cols, columns=cols)
+    for d in dates:
+        show_df[(d, "vol")] = vol_df.loc[d, style_cols]
+        show_df[(d, "rank_250d")] = vol_ret["rank_250d"].loc[d, style_cols]
+        show_df[(d, "rank_750d")] = vol_ret["rank_750d"].loc[d, style_cols]
+        show_df[(d, "z_250d")] = vol_ret["z_250d"].loc[d, style_cols]
+        show_df[(d, "z_750d")] = vol_ret["z_750d"].loc[d, style_cols]
+    fig, ax = plt.subplots(figsize=(12, 4))
+    for c in style_cols:
+        ax.plot(vol_df.index, vol_df[c], lw=1.2, label=str(c))
+    ax.set_title("Barra因子20日波动率")
+    ax.grid(alpha=0.3)
+    ax.legend(loc="upper left", bbox_to_anchor=(-0.15, 1), fontsize=7.5, ncol=1)
+    fig.autofmt_xdate(); st.pyplot(fig); plt.close(fig)
+    styled = show_df.style.format(lambda v: "-" if pd.isna(v) else (f"{v:.2%}" if abs(v) <= 1 and isinstance(v, (float, np.floating)) and "rank" in str(v) else f"{v:.4f}"))
+    try:
+        styled = styled.bar(subset=pd.IndexSlice[:, pd.IndexSlice[:, ["rank_250d", "rank_750d"]]], color="#d65f5f")
+    except Exception:
+        pass
+    html = styled.set_table_styles([{ "selector": "td, th", "props": [("padding", "5px 10px"), ("text-align", "right"), ("white-space", "nowrap")] },{ "selector": "th", "props": [("text-align", "left"), ("font-weight", "bold")] }]).to_html()
+    st.markdown(f"<div style='overflow-x:auto; width:100%;'>{html}</div>", unsafe_allow_html=True)
+
+
 def cal_rolling_corr(df, factor1, factor2, sd, ed, windows=(20, 40, 60)):
     """
     计算风格因子的滚动 Pearson 相关系数，绘制折线图。

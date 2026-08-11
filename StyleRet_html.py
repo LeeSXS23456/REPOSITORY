@@ -16,7 +16,7 @@ from rqdatac import *
 # prop = font_manager.FontProperties(fname=font_path)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-CACHE_FILE = os.path.join(BASE_DIR, "data_base", "fac_ret", "whole_mkt", "factor_returns_20_2603.pkl")
+CACHE_FILE = os.path.join(BASE_DIR, "data_base", "fac_ret", "whole_mkt", "factor_returns_10_2608.pkl")
 BASIS_DIR = os.path.join(BASE_DIR, "data_base", "basis","index_future_basis_data.pkl")
 KJDIR = os.path.join(BASE_DIR, "data_base", "index")
 
@@ -237,6 +237,9 @@ if mode == "Barra大类综合":
     nav = nav / nav.iloc[0]
     order = nav.iloc[-1].sort_values(ascending=False).index
 
+    if cat == "风格因子":
+        render_style_volatility_section(df_view, style_cols, sd, ed)
+
     today_idx = nav.index
     today = today_idx[-1]
 
@@ -270,10 +273,6 @@ if mode == "Barra大类综合":
     month_ret = df_view.loc[curr_month_start:today, target]
     vol = month_ret.std()
 
-    #核算
-    print(week_start, month_start, curr_month_start,today)
-
-
     tbl = pd.DataFrame({
         "最新净值": latest_nav,
         "1日收益": ret_1d * 100,
@@ -284,7 +283,6 @@ if mode == "Barra大类综合":
     }).round(4)
     tbl = tbl.reindex(order)
 
-    #基础净值曲线展示
     fig, ax = plt.subplots(figsize=(12, 6))
     for c in order:
         ax.plot(nav.index, nav[c], label=str(c), lw=1.2)
@@ -297,7 +295,6 @@ if mode == "Barra大类综合":
     st.pyplot(fig)
     plt.close(fig)
 
-    #具体数据表格展示
     bar_cols = ["1日收益", "本周累计", "本月累计"]
     styled = tbl.style.format({
         "最新净值": "{:.4f}",
@@ -314,7 +311,6 @@ if mode == "Barra大类综合":
     ]).to_html()
     st.markdown(f"""<div style="overflow-x:auto; width:100%;">{html}</div>""", unsafe_allow_html=True)
 
-    #风格因子相关性与 Beta（fragment：改窗口时仅重算此区域）
     if cat == "风格因子":
         corr_beta_section(df_view, style_cols, ed, KJDIR)
         rolling_corr_section(df_view, style_cols, sd, ed)
