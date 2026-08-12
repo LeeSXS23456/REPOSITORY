@@ -18,6 +18,10 @@ INDDIR = os.path.join(BASE_DIR, "data_base", "industry_component_日频")
 MCPDIR = os.path.join(BASE_DIR, "data_base", "stk_mcp")
 
 _UNIVERSE_INDEX = {"沪深300": "000300.XSHG", "中证500": "000905.XSHG", "中证1000": "000852.XSHG", "上证50": "000016.XSHG","中证2000":"932000.INDX"}
+INDUSTRY_UNIVERSES = ['石油石化', '煤炭', '有色金属', '电力及公用事业', '钢铁', '基础化工', '建筑', '建材', '轻工制造',
+       '机械', '电力设备及新能源', '国防军工', '汽车', '商贸零售', '消费者服务', '家电', '纺织服装',
+       '医药', '食品饮料', '农林牧渔', '银行', '非银行金融', '房地产', '综合金融', '交通运输', '电子',
+       '通信', '计算机', '传媒', '综合']
 
 # ── 简易 parquet 缓存：同一文件整个会话只读一次 ──
 _pq = {}
@@ -375,6 +379,67 @@ def calc_vol_percentile(cs_vol, window=252):
         hist = vals[i - window + 1 : i + 1]
         pct[i] = (hist <= vals[i]).mean()
     return pd.Series(pct, index=cs_vol.index, name="pct_rank")
+
+
+def build_market_vol_snapshot(cached_map, freq="daily", as_of=None, top_n=10):
+    """汇总 as_of 日全A、宽基指数和波动率前N行业的快照指标。"""
+    lookback = 252 if freq == "daily" else 52
+    as_of = pd.Timestamp(as_of) if as_of is not None else None
+
+    def _last_row(universe):
+        df = cached_map.get(universe)
+        if df is None or df.empty:
+            return None
+        if as_of is None:
+            row = df.iloc[-1]
+            ts = df.index[-1]
+        else:
+            sub = df.loc[df.index <= as_of]
+            if sub.empty:
+                return None
+            row = sub.iloc[-1]
+            ts = sub.index[-1]
+        pct = calc_vol_percentile(df["cs_vol"], window=lookback)
+        return {
+            "date": ts,
+            "universe": universe,
+            "cs_vol": row.get("cs_vol", np.nan),
+            "pct_rank": pct.loc[ts] if ts in pct.index else np.nan,
+            "up_pct": row.get("up_pct", np.nan),
+            "down_pct": row.get("down_pct", np.nan),
+        }
+
+    rows = []
+    for universe in ["全A", *list(_UNIVERSE_INDEX.keys())]:
+        item = _last_row(universe)
+        if item is not None:
+            item["group"] = "宽基" if universe != "全A" else "全A"
+            rows.append(item)
+
+    industry_rows = []
+    for universe in INDUSTRY_UNIVERSES:
+        item = _last_row(universe)
+        if item is not None:
+            item["group"] = "行业"
+            industry_rows.append(item)
+
+    industry_rows = sorted(industry_rows, key=lambda x: x["cs_vol"], reverse=True)[:top_n]
+    rows.extend(industry_rows)
+
+    if not rows:
+        return pd.DataFrame(columns=["日期", "类别", "分域", "波动率", "历史分位数", "上涨比例", "下跌比例"])
+
+    out = pd.DataFrame(rows)
+    out = out.rename(columns={
+        "date": "日期",
+        "group": "类别",
+        "universe": "分域",
+        "cs_vol": "波动率",
+        "pct_rank": "历史分位数",
+        "up_pct": "上涨比例",
+        "down_pct": "下跌比例",
+    })
+    return out[["日期", "类别", "分域", "波动率", "历史分位数", "上涨比例", "下跌比例"]]
 
 
 def _fmt_dates(ax):

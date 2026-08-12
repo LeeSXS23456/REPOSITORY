@@ -8,6 +8,7 @@ import streamlit as st
 from helpfunc_basis import *
 from helpfunc_barra import *
 from helpfunc_vol import *
+from helpfunc_vol import _UNIVERSE_INDEX, INDUSTRY_UNIVERSES
 from rqdatac import *
 
 # from matplotlib import font_manager
@@ -456,58 +457,98 @@ elif mode == "全市场波动":
     CACHE_DIR = os.path.join(os.path.dirname(__file__), "data_base", "volatility", "output")
     os.makedirs(CACHE_DIR, exist_ok=True)
 
-    # 用户选择
-    _c1, _c2, _c3 = st.columns(3)
-    with _c1:
-        _freq = st.radio("频率", ["daily", "weekly"], horizontal=True)
-    with _c2:
-        _uni_opts = ["全A", "沪深300", "中证500", "中证1000", "中证2000","上证50"]
-        _uni_opts += ['石油石化', '煤炭', '有色金属', '电力及公用事业', '钢铁', '基础化工', '建筑', '建材', '轻工制造',
-       '机械', '电力设备及新能源', '国防军工', '汽车', '商贸零售', '消费者服务', '家电', '纺织服装',
-       '医药', '食品饮料', '农林牧渔', '银行', '非银行金融', '房地产', '综合金融', '交通运输', '电子',
-       '通信', '计算机', '传媒', '综合']
-        _universe = st.selectbox("分域", _uni_opts)
-    with _c3:
-        _weighted = st.radio("加权", ["等权", "加权"], horizontal=True) == "加权"
+    _freq_key = "vol_freq"
+    _universe_key = "vol_universe"
+    _weighted_key = "vol_weighted"
+    _freq = st.session_state.get(_freq_key, "daily")
+    _uni_opts = ["全A", *list(_UNIVERSE_INDEX.keys()), *INDUSTRY_UNIVERSES]
+    _universe = st.session_state.get(_universe_key, "全A")
+    _weighted = st.session_state.get(_weighted_key, False)
 
-	    # ── 内存缓存（切换下拉框后回来直接秒出）──
     _tag = f"{'w' if _weighted else 'ew'}"
-    _cache_path = os.path.join(CACHE_DIR, f"{_freq}_{_universe}_{_tag}.pkl")
     _data_key = f"vol_data_{_freq}_{_universe}_{_tag}"       # 全量数据（与日期无关）
 
+    
+
+    #_view_key = f"vol_view_{_freq}_{_universe}_{_tag}_{sd.date()}_{ed.date()}_{_ma_tuple}"
+
+    def _load_cached_vol(_u):
+        _path = os.path.join(CACHE_DIR, f"{_freq}_{_u}_{_tag}.pkl")
+        _key = f"vol_data_{_freq}_{_u}_{_tag}"
+        if _key in st.session_state:
+            return st.session_state[_key]
+        if os.path.exists(_path):
+            _df = pd.read_pickle(_path)
+            st.session_state[_key] = _df
+            return _df
+        return pd.DataFrame()
+
+    def _ensure_cached_vol(_u):
+        _path = os.path.join(CACHE_DIR, f"{_freq}_{_u}_{_tag}.pkl")
+        _key = f"vol_data_{_freq}_{_u}_{_tag}"
+        _cached = _load_cached_vol(_u)
+        _calc_start = (_cached.index.max() + pd.Timedelta(days=1)) if not _cached.empty else sd
+        if _calc_start <= ed:
+            new_df = calc_cs_stats(_freq, start=_calc_start, end=ed, universe=_u, weighted=_weighted)
+            _cached = pd.concat([_cached, new_df])
+            _cached = _cached[~_cached.index.duplicated(keep="last")].sort_index()
+            _cached.to_pickle(_path)
+        st.session_state[_key] = _cached
+        return _cached
+
+    summary_universes = ["全A", *list(_UNIVERSE_INDEX.keys()), *INDUSTRY_UNIVERSES]
+
+    # ① 先统一更新所有分域缓存
+    update_Aret(ed)
+    with st.spinner(f"更新全市场波动缓存（{len(summary_universes)}个分域）…"):
+        summary_cache = {u: _ensure_cached_vol(u) for u in summary_universes}
+    cached = summary_cache[_universe]
+    st.session_state[_data_key] = cached
+
+    _summary = build_market_vol_snapshot(summary_cache, freq=_freq, as_of=ed, top_n=10)
+    if not _summary.empty:
+        st.markdown(f"**{pd.Timestamp(_summary['日期'].max()).date()} 市场波动概览**")
+        _summary_num_cols = ["波动率", "历史分位数", "上涨比例", "下跌比例"]
+        styled_summary = _summary.style.format({c: "{:.2%}" for c in _summary_num_cols}, na_rep="-")
+        styled_summary = styled_summary.bar(subset=["波动率"], color="#5B8FF9")
+        styled_summary = styled_summary.bar(subset=["历史分位数"], color="#F6BD16", vmin=0, vmax=1)
+        html_summary = styled_summary.set_table_styles([
+            {"selector": "td, th", "props": [("padding", "5px 10px"), ("text-align", "right"), ("white-space", "nowrap")]},
+            {"selector": "th", "props": [("text-align", "left"), ("font-weight", "bold")]},
+        ]).to_html()
+        st.markdown(f"""<div style="overflow-x:auto; width:100%;">{html_summary}</div>""", unsafe_allow_html=True)
+        st.markdown("---")
+
+    # 用户选择（放在概览表后、子图前）
+    _c1, _c2, _c3 = st.columns(3)
+    with _c1:
+        _freq = st.radio("频率", ["daily", "weekly"], horizontal=True, key=_freq_key)
+    with _c2:
+        _universe = st.selectbox("分域", _uni_opts, index=_uni_opts.index(_universe) if _universe in _uni_opts else 0, key=_universe_key)
+    with _c3:
+        _weighted = st.radio("加权", ["等权", "加权"], horizontal=True, index=1 if _weighted else 0, key="vol_weighted_label") == "加权"
+        st.session_state[_weighted_key] = _weighted
+
+    _tag = f"{'w' if _weighted else 'ew'}"
+    _data_key = f"vol_data_{_freq}_{_universe}_{_tag}"
     # MA 均线选择
     _ma_opts = [5, 20, 60] if _freq == "daily" else [4, 13, 52]
     _ma_windows = st.multiselect("MA", _ma_opts, [], key=f"ma_{_data_key}")
     _ma_tuple = tuple(sorted(_ma_windows))
-
     _view_key = f"vol_view_{_freq}_{_universe}_{_tag}_{sd.date()}_{ed.date()}_{_ma_tuple}"
-
-    # ① 全量数据：内存 > 磁盘 > 从头计算
-    if _data_key in st.session_state:
-        cached = st.session_state[_data_key]
-    else:
-        update_Aret(ed)
-        if os.path.exists(_cache_path):
-            cached = pd.read_pickle(_cache_path)
-            _calc_start = cached.index.max() + pd.Timedelta(days=1)
-        else:
-            cached = pd.DataFrame()
-            _calc_start = sd
-
-        if _calc_start <= ed:
-            with st.spinner(f"计算 {_universe} {_freq} {_tag}（{_calc_start.date()} ~ {ed.date()}）…"):
-                new_df = calc_cs_stats(_freq, start=_calc_start, end=ed,
-                                       universe=_universe, weighted=_weighted)
-            cached = pd.concat([cached, new_df])
-            cached = cached[~cached.index.duplicated(keep="last")].sort_index()
-            cached.to_pickle(_cache_path)
-        st.session_state[_data_key] = cached
+    cached = st.session_state.get(_data_key, cached if _universe == st.session_state.get(_universe_key, _universe) else pd.DataFrame())
 
     # ② 视图（figs + 表格）：命中则跳过画图，否则重新生成
     if _view_key in st.session_state:
         figs, _tbl, csv, _fname = st.session_state[_view_key]
         st.info("📋 配置未变，从内存直接展示")
     else:
+        if _data_key not in st.session_state:
+            with st.spinner(f"计算 {_universe} {_freq} {_tag} …"):
+                cached = _ensure_cached_vol(_universe)
+        else:
+            cached = st.session_state[_data_key]
+
         _display = cached.loc[pd.Timestamp(sd):pd.Timestamp(ed)]
         if _display.empty:
             st.warning("所选区间无数据")
@@ -583,7 +624,7 @@ else:
         rank750_df = vol_metrics["rank_750d"]
         z250_df = vol_metrics["z_250d"]
         z750_df = vol_metrics["z_750d"]
-    for k in range(1, 6):
+    for k in range(1, 21):
         if len(ret) < k:
             break
         idx = ret.index[-k]
@@ -656,7 +697,7 @@ else:
             "波动率分位数250(%)": rank250_list,
             "波动率分位数750(%)": rank750_list,
         } if sub_cat == "风格因子" else {}),
-    }, index=row_labels).round(3)
+    }, index=row_labels).round(4)
 
     bar_s_cols = ["收益率(%)"]
     pct_s_cols = ["收益率历史分位数(%)"] + (["波动率分位数250(%)", "波动率分位数750(%)"] if sub_cat == "风格因子" else [])
@@ -667,7 +708,7 @@ else:
     }
     if sub_cat == "风格因子":
         fmt_map.update({
-            "vol": "{:.4f}",
+            "vol": "{:.2%}",
             "z_250d": "{:.3f}",
             "z_750d": "{:.3f}",
             "波动率分位数250(%)": "{:.2%}",
