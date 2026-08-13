@@ -239,7 +239,19 @@ if mode == "Barra大类综合":
     order = nav.iloc[-1].sort_values(ascending=False).index
 
     if cat == "风格因子":
+        st.subheader("barra波动率")
         render_style_volatility_section(df_view, style_cols, sd, ed)
+        picked_style_vol = st.multiselect(
+            "查看多窗口时序波动率因子（最多2个）",
+            style_cols,
+            default=[],
+            max_selections=2,
+            key="style_vol_multi_factors",
+        )
+        if picked_style_vol:
+            plot_factor_volatility_multiwindow(df_view, picked_style_vol, start=sd, end=ed)
+
+    st.subheader("barra收益率")
 
     today_idx = nav.index
     today = today_idx[-1]
@@ -511,7 +523,7 @@ elif mode == "全市场波动":
         _summary_num_cols = ["波动率", "历史分位数", "上涨比例", "下跌比例"]
         styled_summary = _summary.style.format({c: "{:.2%}" for c in _summary_num_cols}, na_rep="-")
         styled_summary = styled_summary.bar(subset=["波动率"], color="#5B8FF9")
-        styled_summary = styled_summary.bar(subset=["历史分位数"], color="#F6BD16", vmin=0, vmax=1)
+        styled_summary = styled_summary.bar(subset=["历史分位数"], color="#d65f5f", vmin=0, vmax=1)
         html_summary = styled_summary.set_table_styles([
             {"selector": "td, th", "props": [("padding", "5px 10px"), ("text-align", "right"), ("white-space", "nowrap")]},
             {"selector": "th", "props": [("text-align", "left"), ("font-weight", "bold")]},

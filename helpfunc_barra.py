@@ -115,6 +115,7 @@ def cal_factor_volatility(df: pd.DataFrame, cols=None, vol_window=20, hist_windo
 def render_style_volatility_section(df_view, style_cols, sd, ed, key="barra_vol_date"):
     vol_ret = cal_factor_volatility(df_view[style_cols])
     vol_df = vol_ret["vol"]
+    #vol_ma_df = vol_df.rolling(5, min_periods=1).mean()
     opts = [d.date().isoformat() for d in vol_df.index if pd.notna(d) and d <= ed and d >= sd]
     picked = st.multiselect("查看日期（可额外选1-3个）", opts, default=[], key=key, max_selections=3)
     extra_dates = [pd.Timestamp(d) for d in picked if pd.Timestamp(d) != pd.Timestamp(ed)]
@@ -144,6 +145,46 @@ def render_style_volatility_section(df_view, style_cols, sd, ed, key="barra_vol_
         pass
     html = styled.set_table_styles([{ "selector": "td, th", "props": [("padding", "5px 10px"), ("text-align", "right"), ("white-space", "nowrap")] },{ "selector": "th", "props": [("text-align", "left"), ("font-weight", "bold")] }]).to_html()
     st.markdown(f"<div style='overflow-x:auto; width:100%;'>{html}</div>", unsafe_allow_html=True)
+
+def cal_factor_volatility_multi(df: pd.DataFrame, factor_cols, windows=(10,20)):
+    factor_cols = list(factor_cols)
+    return {
+        w: cal_factor_volatility(df, cols=factor_cols, vol_window=w, hist_windows=())["vol"]
+        for w in windows
+    }
+
+
+def plot_factor_volatility_multiwindow(df: pd.DataFrame, factor_cols, start=None, end=None, windows=(10,20)):
+    factor_cols = [c for c in factor_cols if c in df.columns]
+    if not factor_cols:
+        st.warning("未找到可用因子列")
+        return
+
+    df = df.sort_index()
+    vol_map = cal_factor_volatility_multi(df, factor_cols, windows=windows)
+    layout_cols = st.columns(min(len(factor_cols), 2)) if len(factor_cols) > 1 else [st]
+
+    for i, factor in enumerate(factor_cols):
+        fig, ax = plt.subplots(figsize=(12, 4))
+        for w in windows:
+            s = vol_map[w][factor]
+            if start is not None:
+                s = s[s.index >= pd.Timestamp(start)]
+            if end is not None:
+                s = s[s.index <= pd.Timestamp(end)]
+            ax.plot(s.index, s, lw=1.2, label=f"vol_{w}d")
+        ax.set_title(f"{factor} TS_VOL")
+        ax.grid(alpha=0.3)
+        ax.legend(loc="upper left", fontsize=8, ncol=len(windows))
+        ax.xaxis.set_major_locator(mdates.MonthLocator(bymonth=[3, 6, 9, 12]))
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y%m"))
+        ax.tick_params(axis="x", labelsize=7)
+        fig.autofmt_xdate()
+        fig.tight_layout()
+        layout_cols[i % len(layout_cols)].pyplot(fig)
+        plt.close(fig)
+
+
 
 
 def cal_rolling_corr(df, factor1, factor2, sd, ed, windows=(20, 40, 60)):
