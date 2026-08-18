@@ -413,6 +413,40 @@ elif mode == "基差成本监控":
         else:
             st.info("请至少勾选一组列")
 
+    # 每个 order_book_id 的存续期是否与 [sd, ed] 有重叠
+    def _has_overlap(sub):
+        ld = sub["listed_date"].iloc[0]
+        md = sub["maturity_date"].iloc[0]
+        return not (md < sd or ld > ed)
+
+    valid_ids = []
+    for _id, _sub in df_basis.groupby(level="order_book_id", sort=False):
+        if _has_overlap(_sub):
+            valid_ids.append(str(_id))
+
+    if not valid_ids:
+        st.error("当前日期范围内没有可用的合约")
+        st.stop()
+
+    valid_ids = sorted(valid_ids)
+    ic_ids = [x for x in valid_ids if x.startswith("IC")]
+    default_id = ic_ids[-4] if len(ic_ids) >= 4 else (ic_ids[0] if ic_ids else valid_ids[0])
+    sel_id = st.selectbox("选择合约 (order_book_id)", valid_ids, index=valid_ids.index(default_id))
+    sub = df_basis[df_basis.index.get_level_values("order_book_id").astype(str) == sel_id].copy()
+    sub = sub.sort_values("date").reset_index(drop=True)
+
+    # 取该合约在 [sd, ed] 区间内的日期用于绘图
+    plot_sub = sub[(sub["date"] >= sd) & (sub["date"] <= ed)].reset_index(drop=True)
+    if plot_sub.empty:
+        st.warning("所选合约在当前日期区间内没有数据")
+        st.stop()
+
+    fig, tbl_html = plot_basis_series(plot_sub, contract_id=sel_id,mode="adjust")
+    st.pyplot(fig)
+    plt.close(fig)
+    st.markdown(tbl_html, unsafe_allow_html=True)
+
+
     # ====== 分红除权明细 ======
     if not _fhds_detail.empty:
         st.markdown("---")
@@ -435,35 +469,7 @@ elif mode == "基差成本监控":
                 plt.close(_fig)
 
 
-    # 每个 order_book_id 的存续期是否与 [sd, ed] 有重叠
-    def _has_overlap(sub):
-        ld = sub["listed_date"].iloc[0]
-        md = sub["maturity_date"].iloc[0]
-        return not (md < sd or ld > ed)
-
-    valid_ids = []
-    for _id, _sub in df_basis.groupby(level="order_book_id", sort=False):
-        if _has_overlap(_sub):
-            valid_ids.append(str(_id))
-
-    if not valid_ids:
-        st.error("当前日期范围内没有可用的合约")
-        st.stop()
-
-    sel_id = st.selectbox("选择合约 (order_book_id)", sorted(valid_ids))
-    sub = df_basis[df_basis.index.get_level_values("order_book_id").astype(str) == sel_id].copy()
-    sub = sub.sort_values("date").reset_index(drop=True)
-
-    # 取该合约在 [sd, ed] 区间内的日期用于绘图
-    plot_sub = sub[(sub["date"] >= sd) & (sub["date"] <= ed)].reset_index(drop=True)
-    if plot_sub.empty:
-        st.warning("所选合约在当前日期区间内没有数据")
-        st.stop()
-
-    fig, tbl_html = plot_basis_series(plot_sub, contract_id=sel_id,mode="adjust")
-    st.pyplot(fig)
-    plt.close(fig)
-    st.markdown(tbl_html, unsafe_allow_html=True)
+    
 
 elif mode == "全市场波动":
     CACHE_DIR = os.path.join(os.path.dirname(__file__), "data_base", "volatility", "output")
