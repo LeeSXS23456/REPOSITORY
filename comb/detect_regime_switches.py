@@ -149,7 +149,7 @@ def factor_rank_shift_candidates(
         return [], []
     strengthen_mask = (current["rank_delta"] >= shift_threshold) | (current["rank_delta_roll"] >= shift_threshold)
     weaken_mask = (current["rank_delta"] <= -shift_threshold) | (current["rank_delta_roll"] <= -shift_threshold)
-    strengthening = current.loc[strengthen_mask].sort_values("rank_delta_roll", ascending=False)["factor_name"].tolist()
+    strengthening = current.loc[strengthen_mask].sort_values("rank_delta_roll", ascending=False)["factor_name"].tolist() #【调】"rank_delta"
     weakening = current.loc[weaken_mask].sort_values("rank_delta_roll")["factor_name"].tolist()
     return strengthening, weakening
 
@@ -206,14 +206,18 @@ def top_factor_set(factor_ts_metrics_df: pd.DataFrame, date: pd.Timestamp, windo
 def window_convergence_score(
     factor_ts_metrics_df: pd.DataFrame,
     start_date: pd.Timestamp,
+    target_factors: Iterable[str],
     lookahead: int = CONVERGENCE_LOOKAHEAD,
 ) -> tuple[float, pd.Timestamp | None]:
-    """寻找强势因子见顶信号"""
+    """目标因子是否在40/60窗口上向20日窗口收敛"""
+    target = set(target_factors)
+    if not target:
+        return 0.0, None
     dates = factor_ts_metrics_df.loc[factor_ts_metrics_df["date"] >= start_date, "date"].drop_duplicates().sort_values().head(lookahead)
     best_score = 0.0
     best_date = None
     for date in dates:
-        top20 = set(top_factor_set(factor_ts_metrics_df, date, SHORT_WINDOW))
+        top20 = set(top_factor_set(factor_ts_metrics_df, date, SHORT_WINDOW)) & target
         if not top20:
             continue
         overlap_40 = len(top20 & set(top_factor_set(factor_ts_metrics_df, date, MID_WINDOW))) / len(top20)
@@ -223,6 +227,20 @@ def window_convergence_score(
             best_score = score
             best_date = pd.Timestamp(date)
     return float(best_score), best_date
+
+
+def target_factors_for_middle(
+    dominant_spread: str | None,
+    spread_sign: int,
+    strengthening_factors: Iterable[str],
+) -> list[str]:
+    if dominant_spread == "spread_gv":
+        return ["growth", "momentum"] if spread_sign > 0 else ["book_to_price", "earnings_yield"]
+    if dominant_spread == "spread_size":
+        return ["size"] if spread_sign > 0 else ["non_linear_size"]
+    if dominant_spread == "spread_sv":
+        return ["beta", "liquidity"] if spread_sign > 0 else ["residual_volatility"]
+    return list(strengthening_factors[:2])
 
 
 def factor_quality_strengthening(
@@ -296,9 +314,7 @@ def spread_confirmation_score(
 
 def choose_dominant_spread(spread_daily: pd.DataFrame, start_date: pd.Timestamp) -> tuple[str | None, int, float]:
     """在spread_order中选择最能解释切换方向的spread"""
-    best_name = None
-    best_sign = 0
-    best_score = 0.0
+    best_name, best_sign, best_score = None, 0, 0.0
     for spread_name in SPREAD_ORDER:
         flipped, sign = spread_flip_signal(spread_daily, spread_name, start_date)
         if not flipped:
@@ -306,7 +322,7 @@ def choose_dominant_spread(spread_daily: pd.DataFrame, start_date: pd.Timestamp)
         score = spread_confirmation_score(spread_daily, spread_name, start_date, sign)
         if score > best_score:
             best_name, best_sign, best_score = spread_name, sign, score
-    return best_name, best_sign, float(best_score)
+    return (best_name, best_sign, float(best_score)) if best_score > 1 / np.sqrt(SPREAD_PERSISTENCE_DAYS) else (None, 0, 0.0)
 
 
 def evaluate_transition_middle(
@@ -314,8 +330,13 @@ def evaluate_transition_middle(
     spread_daily: pd.DataFrame,
     start_signal: TransitionStartSignal,
 ) -> TransitionMiddleSignal:
-    convergence_score, confirm_date = window_convergence_score(factor_ts_metrics_df, start_signal.start_date)
     dominant_spread, spread_sign, spread_score = choose_dominant_spread(spread_daily, start_signal.start_date)
+    target_factors = target_factors_for_middle(dominant_spread, spread_sign, start_signal.strengthening_factors)
+    convergence_score, confirm_date = window_convergence_score(
+        factor_ts_metrics_df,
+        start_signal.start_date,
+        target_factors,
+    )
     return TransitionMiddleSignal(
         confirm_date=confirm_date, #如果confirm_date为None，意味着是一个错误的切换信号，因为在未来的20天内，20没有带动40/60上涨
         convergence_score=convergence_score,
@@ -333,36 +354,85 @@ def rank_ins_stabilized(rank_inertia_daily: pd.DataFrame, date: pd.Timestamp) ->
 
 def new_regime_persistence(
     spread_daily: pd.DataFrame,
+    start_date: pd.Timestamp,
+    end_date: pd.Timestamp,
     spread_name: str | None,
-    confirm_date: pd.Timestamp | None,
     target_sign: int,
 ) -> int:
-    if spread_name is None or confirm_date is None or target_sign == 0:
+    if spread_name is None or target_sign == 0:
         return 0
     sub = spread_daily[
         (spread_daily["spread_name"] == spread_name)
         & (spread_daily["window"] == SHORT_WINDOW)
-        & (spread_daily["date"] >= confirm_date)
+        & (spread_daily["date"] >= start_date)
+        & (spread_daily["date"] <= end_date)
     ]
-    return 0 if sub.empty else int(sub["positive_streak" if target_sign > 0 else "negative_streak"].max())
+    if sub.empty:
+        return 0
+    ok = sub["direction_sign"] == target_sign
+    return int(ok.sum())
+
+
+def factor_regime_persistence(
+    factor_ts_metrics_df: pd.DataFrame,
+    start_date: pd.Timestamp,
+    end_date: pd.Timestamp,
+    strengthening_factors: Iterable[str],
+) -> int:
+    strengthening = set(strengthening_factors)
+    if not strengthening:
+        return 0
+    dates = (
+        factor_ts_metrics_df.loc[
+            (factor_ts_metrics_df["window"] == SHORT_WINDOW)
+            & (factor_ts_metrics_df["date"] >= start_date)
+            & (factor_ts_metrics_df["date"] <= end_date),
+            "date",
+        ]
+        .drop_duplicates()
+        .sort_values()
+    )
+    count = 0
+    for date in dates:
+        leaders = set(leaders_at_date(factor_ts_metrics_df, date))
+        if leaders & strengthening:
+            count += 1
+    return count
 
 
 def confirm_transition_end(
     rank_inertia_daily: pd.DataFrame,
     spread_daily: pd.DataFrame,
+    factor_ts_metrics_df: pd.DataFrame,
+    start_signal: TransitionStartSignal,
     middle_signal: TransitionMiddleSignal,
 ) -> TransitionEndSignal:
     confirm_date = middle_signal.confirm_date
     if confirm_date is None:
         return TransitionEndSignal(end_date=None, stabilized=False, persistence_days=0)
-    persistence_days = new_regime_persistence(spread_daily, middle_signal.dominant_spread, confirm_date, middle_signal.spread_sign)
     dates = (
         rank_inertia_daily.loc[rank_inertia_daily["date"] >= confirm_date, "date"]
         .drop_duplicates()
         .sort_values()
         .head(LONG_WINDOW)
     )
+    persistence_days = 0
     for date in dates:
+        if middle_signal.dominant_spread:
+            persistence_days = new_regime_persistence(
+                spread_daily,
+                start_signal.start_date,
+                pd.Timestamp(date),
+                middle_signal.dominant_spread,
+                middle_signal.spread_sign,
+            )
+        else:
+            persistence_days = factor_regime_persistence(
+                factor_ts_metrics_df,
+                start_signal.start_date,
+                pd.Timestamp(date),
+                start_signal.strengthening_factors,
+            )
         if rank_ins_stabilized(rank_inertia_daily, date) and persistence_days >= SPREAD_PERSISTENCE_DAYS:
             return TransitionEndSignal(end_date=pd.Timestamp(date), stabilized=True, persistence_days=persistence_days)
     return TransitionEndSignal(end_date=confirm_date, stabilized=False, persistence_days=persistence_days)
@@ -581,18 +651,19 @@ def run_detection(
     middle_signals = [evaluate_transition_middle(factor_ts_metrics_df, spread_daily, s) for s in start_signals]
 
     print(f"[4/5] confirm end signals | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    end_signals = [confirm_transition_end(rank_inertia_daily, spread_daily, m) for m in middle_signals]
+    end_signals = [confirm_transition_end(rank_inertia_daily, spread_daily, factor_ts_metrics_df, s, m) for s, m in zip(start_signals, middle_signals)]
 
     events = [
         assemble_regime_event(i + 1, s, m, e, factor_ts_metrics_df, spread_daily)
         for i, (s, m, e) in enumerate(zip(start_signals, middle_signals, end_signals))
     ]
-    events_df = merge_overlapping_events(pd.DataFrame(events)) if events else pd.DataFrame()
+    events_df = pd.DataFrame(events) if events else pd.DataFrame()
     diagnostics_df = build_diagnostics(start_signals, middle_signals, end_signals)
     if not events_df.empty:
         valid = (events_df["confirm_date"] - events_df["start_date"]).dt.days > 7
         events_df = events_df.loc[valid].reset_index(drop=True)
         diagnostics_df = diagnostics_df.loc[valid].reset_index(drop=True)
+        events_df = merge_overlapping_events(events_df)
 
     print(f"[5/5] save outputs: events={len(events_df)}, diagnostics={len(diagnostics_df)} | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     save_event_outputs(events_df, diagnostics_df, output_dir)
@@ -600,7 +671,7 @@ def run_detection(
 
 
 if __name__ == "__main__":
-    events_df, diagnostics_df = run_detection(start="2023-09-30", end="2024-04-01")
+    events_df, diagnostics_df = run_detection(start="2010-01-01", end="2026-08-17")
     print(f"events: {events_df.shape}")
     print(f"diagnostics: {diagnostics_df.shape}")
     print(f"output_dir: {OUTPUT_DIR}")
