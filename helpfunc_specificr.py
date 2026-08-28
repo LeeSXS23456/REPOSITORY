@@ -1,6 +1,6 @@
 """
 spe_ret 辅助函数：个股波动率时序 / 历史排位 / 截面均值 / 绘图
-数据路径: E:/SJTU/intern/gtht/barra/data_base/spe_ret/v2
+数据路径: E:/SJTU/intern/gtht/barra/data_base/spe_ret/v1
 """
 
 import numpy as np
@@ -365,3 +365,127 @@ if __name__ == "__main__":
     plot_vol_summary(summary,events=events)
     plot_vol_growth(summary)
     plt.show()
+
+
+# ---------- 复盘 MD 文档渲染 ----------
+_MD_SCROLL_CSS = """
+<style>
+.md-scroll-container {
+    height: 600px;
+    overflow-y: auto;
+    border: 1px solid #d0d7de;
+    border-radius: 8px;
+    padding: 20px 24px;
+    background-color: #ffffff !important;
+    color: #000000 !important;
+    line-height: 1.7;
+    font-size: 15px;
+}
+.md-scroll-container h1,
+.md-scroll-container h2,
+.md-scroll-container h3,
+.md-scroll-container h4,
+.md-scroll-container h5,
+.md-scroll-container h6 {
+    color: #000000 !important;
+    font-weight: 700 !important;
+    margin-top: 1.2em;
+    margin-bottom: 0.5em;
+    line-height: 1.3;
+    display: block !important;
+}
+.md-scroll-container h1 { font-size: 1.8em !important; border-bottom: 2px solid #5B8FF9; padding-bottom: 0.3em; }
+.md-scroll-container h2 { font-size: 1.5em !important; border-bottom: 1px solid #d0d7de; padding-bottom: 0.2em; }
+.md-scroll-container h3 { font-size: 1.25em !important; }
+.md-scroll-container h4 { font-size: 1.1em !important; }
+.md-scroll-container h5 { font-size: 1em !important; }
+.md-scroll-container h6 { font-size: 0.9em !important; }
+.md-scroll-container p { margin: 0.6em 0; color: #000000 !important; }
+.md-scroll-container ul, .md-scroll-container ol { margin: 0.5em 0; padding-left: 1.8em; }
+.md-scroll-container li { margin: 0.3em 0; }
+.md-scroll-container code {
+    background-color: #f6f8fa !important;
+    color: #000000 !important;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.9em;
+}
+.md-scroll-container pre {
+    background-color: #f6f8fa !important;
+    color: #000000 !important;
+    padding: 12px 16px;
+    border-radius: 6px;
+    overflow-x: auto;
+    border: 1px solid #d0d7de;
+}
+.md-scroll-container pre code {
+    background: none !important;
+    padding: 0;
+}
+.md-scroll-container blockquote {
+    border-left: 4px solid #5B8FF9;
+    padding-left: 1em;
+    color: #000000 !important;
+    margin: 0.8em 0;
+    background-color: #f6f8fa;
+    padding-top: 0.4em;
+    padding-bottom: 0.4em;
+    padding-right: 1em;
+    border-radius: 0 6px 6px 0;
+}
+.md-scroll-container table { border-collapse: collapse; margin: 0.8em 0; width: auto; }
+.md-scroll-container th, .md-scroll-container td {
+    border: 1px solid #d0d7de;
+    padding: 6px 12px;
+    text-align: left;
+    color: #000000 !important;
+    background-color: #ffffff !important;
+}
+.md-scroll-container th { background-color: #f6f8fa !important; font-weight: 600; }
+.md-scroll-container strong { color: #000000 !important; font-weight: 700; }
+.md-scroll-container em { color: #000000 !important; }
+.md-scroll-container a { color: #0969da !important; text-decoration: underline; }
+.md-scroll-container hr { border: none; border-top: 1px solid #d0d7de; margin: 1.2em 0; }
+</style>
+"""
+
+
+def render_summary_md(summary_dir):
+    """
+    在 streamlit 中渲染 comb/end_input/summary/ 目录下的 md 复盘文档。
+    - 下拉框选择文件名，一次展示一个
+    - 固定高度 + 滚动条
+    - 美化排版（标题、列表、表格、代码块等）
+    """
+    import streamlit as st
+    import os
+
+    if not os.path.isdir(summary_dir):
+        st.warning(f"⚠️ 目录不存在: {summary_dir}")
+        return
+
+    md_files = sorted([f for f in os.listdir(summary_dir) if f.endswith(".md")])
+    if not md_files:
+        st.info("📂 summary 目录下暂无 md 文档")
+        return
+
+    selected_md = st.selectbox("选择复盘文档", md_files)
+    md_path = os.path.join(summary_dir, selected_md)
+    with open(md_path, "r", encoding="utf-8") as f:
+        md_content = f.read()
+
+    st.markdown(_MD_SCROLL_CSS, unsafe_allow_html=True)
+
+    try:
+        import markdown as md_lib
+        html_content = md_lib.markdown(
+            md_content,
+            extensions=["tables", "fenced_code", "toc", "nl2br", "sane_lists"],
+        )
+    except ImportError:
+        html_content = f"<pre style='white-space:pre-wrap;'>{md_content}</pre>"
+
+    st.markdown(
+        f'<div class="md-scroll-container">{html_content}</div>',
+        unsafe_allow_html=True,
+    )

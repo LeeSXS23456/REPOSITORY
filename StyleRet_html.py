@@ -624,7 +624,13 @@ elif mode == "超额回撤复盘":
         {"selector": "th", "props": [("text-align", "left"), ("font-weight", "bold")]},
     ]).to_html()
     st.markdown(f"""<div style="overflow-x:auto; width:100%;">{html_tbl}</div>""", unsafe_allow_html=True)
-    
+
+    # --- 复盘 MD 文档展示 ---
+    st.markdown("---")
+    st.subheader("📄 复盘文档")
+    st.caption("章节导览：一、数据现象  二、市场环境还原  三、原因分析  四、过程时间线  五、影响与启示  六、矛盾检查  七、附录")
+    from helpfunc_specificr import render_summary_md
+    render_summary_md(os.path.join(BASE_DIR, "comb", "end_input", "summary"))
 
 else:
     sub_cat = st.radio("类型", ["风格因子", "行业因子"], horizontal=True)
