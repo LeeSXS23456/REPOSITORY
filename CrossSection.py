@@ -36,7 +36,8 @@ class CrossSection():
     style_expo:float
     """
 
-    def __init__(self,base_data:pd.DataFrame,industry_expo=pd.DataFrame(),style_expo=pd.DataFrame()):
+    def __init__(self,base_data:pd.DataFrame,industry_expo=pd.DataFrame(),style_expo=pd.DataFrame(),weight_type='sqrt_cap'):
+        """weight_type: 'sqrt_cap' (√cap加权, 默认) / 'cap' (市值加权) / 'equal' (等权)"""
         self.N = base_data.shape[0]
         self.P = industry_expo.shape[1]
         self.Q = style_expo.shape[1]
@@ -47,10 +48,17 @@ class CrossSection():
         self.industry_tag = industry_expo.columns
         self.barra_tag = style_expo.columns
         self.stkids = base_data.code
-        
+
         self.style_expo = style_expo.values#standardize(style_expo,self.capital).values #米筐已经标准化了
         self.industry_expo = industry_expo.values
-        self.W = np.diag(np.sqrt(self.capital) / sum(np.sqrt(self.capital))) # already inversed / np.eye(self.N)
+
+        if weight_type == 'cap':
+            w = self.capital / self.capital.sum()
+        elif weight_type == 'equal':
+            w = np.ones(self.N) / self.N
+        else:  # sqrt_cap
+            w = np.sqrt(self.capital) / np.sqrt(self.capital).sum()
+        self.W = np.diag(w)
         self.country_expo = np.array(self.N*[[1]])
 
         print('\rCross Section Regression, ' + 'Date: ' + self.date  + ', ' + \
