@@ -759,10 +759,10 @@ else:
         "收益率z值": z_list,
         **({
             "vol": vol_list,
-            "z_250d": z250_list,
-            "z_750d": z750_list,
             "波动率分位数250(%)": rank250_list,
+            "z_250d": z250_list,
             "波动率分位数750(%)": rank750_list,
+            "z_750d": z750_list,
         } if sub_cat == "风格因子" else {}),
     }, index=row_labels).round(4)
 
@@ -776,10 +776,10 @@ else:
     if sub_cat == "风格因子":
         fmt_map.update({
             "vol": "{:.2%}",
-            "z_250d": "{:.3f}",
-            "z_750d": "{:.3f}",
             "波动率分位数250(%)": "{:.2%}",
+            "z_250d": "{:.3f}",
             "波动率分位数750(%)": "{:.2%}",
+            "z_750d": "{:.3f}",
         })
     styled_single = tbl_single.style.format(fmt_map, na_rep="-")
     styled_single = styled_single.bar(subset=pct_s_cols, color="#d65f5f", vmin=0, vmax=1)

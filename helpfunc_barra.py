@@ -258,14 +258,14 @@ def cal_rolling_corr(df, factor1, factor2, sd, ed, windows=(20, 40, 60)):
 
 def cal_style_beta(df: pd.DataFrame, df_kj, ed, window=20, style_cols=None):
     """
-    计算每个风格因子收益率对宽基指数收益率的一元线性回归 Beta 系数。
+    用所有风格因子收益率对每个宽基指数收益率做多元线性回归，返回因子系数与 R²。
 
     :param df:         因子收益率 DataFrame，DatetimeIndex，列为风格因子
     :param df_kj:      宽基指数日收益率，MultiIndex(date, order_book_id)，列含 'daily_return'
     :param ed:         数据截止日期
     :param window:     计算窗口（最近 N 个交易日）
     :param style_cols: 因子名称列表，默认 STYLE_COLS
-    :return:           Beta 矩阵 DataFrame（行=因子，列=指数代码）
+    :return:           因子系数 DataFrame（行=因子，列=指数代码）
     """
     if style_cols is None:
         style_cols = STYLE_COLS
@@ -281,7 +281,7 @@ def cal_style_beta(df: pd.DataFrame, df_kj, ed, window=20, style_cols=None):
         temp_rt = temp.groupby("order_book_id")["close"].pct_change().dropna()
         temp_rt = temp_rt.to_frame("daily_return")
         df_kj = pd.concat([df_kj, temp_rt]).sort_index()
-        df_kj.to_pickle(f"{KJDIR}/宽基指数日收益率_2601_2607.pkl")
+        df_kj.to_pickle(f"{KJDIR}/宽基指数日收益率_1901_2609.pkl")
 
     # ---------- 2. 宽基收益率透视：行=日期，列=指数 ----------
     mkt = df_kj["daily_return"].unstack("order_book_id")
@@ -291,19 +291,23 @@ def cal_style_beta(df: pd.DataFrame, df_kj, ed, window=20, style_cols=None):
     # ---------- 3. 对齐日期 ----------
     style_data = df[style_cols].iloc[-window:]
     common = style_data.index.intersection(mkt.index)
-    X = mkt.loc[common].values          # (T, n_idx)
-    Y = style_data.loc[common].values   # (T, n_style)
+    X = style_data.loc[common].values    # 自变量：风格因子收益率 (T, n_style)
+    Y = mkt.loc[common].values           # 因变量：宽基指数收益率 (T, n_idx)
 
-    # ---------- 4. 向量化一元 Beta = Cov(X, Y) / Var(X) ----------
-    Xc = X - X.mean(axis=0)
-    Yc = Y - Y.mean(axis=0)
-    cov_xy = Xc.T @ Yc                  # (n_idx, n_style)
-    var_x = (Xc ** 2).sum(axis=0)       # (n_idx,)
-    betas = cov_xy / var_x[:, None]     # (n_idx, n_style)
+    # ---------- 4. 多元回归：用所有风格因子解释每个宽基指数收益率 ----------
+    X_aug = np.column_stack([np.ones(len(common)), X])   # 加截距 (T, 1+n_style)
+    beta_ols = np.linalg.lstsq(X_aug, Y, rcond=None)[0]  # (1+n_style, n_idx)
+    # 只取因子斜率（去掉截距行），行=风格因子，列=宽基指数
+    betas = beta_ols[1:]
+    ss_res = ((Y - X_aug @ beta_ols) ** 2).sum(axis=0)
+    ss_tot = ((Y - Y.mean(axis=0)) ** 2).sum(axis=0)
+    r2_multi = 1 - ss_res / ss_tot                      # (n_idx,)
+    print("多元回归 R²（风格因子 → 宽基指数）:")
+    print(pd.Series(r2_multi, index=[INDEX_NAME_MAP.get(c, c) for c in available]).round(4))
 
     # ---------- 5. 整理输出 ----------
     translate_cols = [INDEX_NAME_MAP.get(c, c) for c in available]
-    result = pd.DataFrame(betas.T, index=style_cols, columns=translate_cols)
+    result = pd.DataFrame(betas, index=style_cols, columns=translate_cols)
     result.index.name = "style_factor"
     result.columns.name = "index_code"
     return result
@@ -322,7 +326,7 @@ def corr_beta_section(df_view, style_cols, ed, kj_dir):
 
     _, _, corr_fig = cal_style_corr(df_view[style_cols], window=corr_window)
 
-    kj_path = os.path.join(kj_dir, "宽基指数日收益率_2601_2607.pkl")
+    kj_path = os.path.join(kj_dir, "宽基指数日收益率_1901_2609.pkl")
     beta_tbl = None
     if os.path.exists(kj_path):
         df_kj = pd.read_pickle(kj_path)
@@ -376,7 +380,6 @@ if __name__ == "__main__":
     df = pd.read_pickle(f"{srcdir}/factor_returns_20_2603.pkl") 
     pearson, spearman, fig =cal_style_corr(df, window=20, annot=True, fmt='.2f')
     #plt.show()
-    df_kj = pd.read_pickle(f"{kjdir}/宽基指数日收益率_2601_2607.pkl")
-    betas, df_check = cal_style_beta(df, df_kj, ed=pd.Timestamp("2026-07-17"), window=20)
-    df_check.to_excel(f"{kjdir}/style_beta_check_2607.xlsx")
+    df_kj = pd.read_pickle(f"{kjdir}/宽基指数日收益率_1901_2609.pkl")
+    betas = cal_style_beta(df, df_kj, ed=pd.Timestamp("2026-07-17"), window=20)
     print(betas)
